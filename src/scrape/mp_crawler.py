@@ -1,36 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
 import time
-import os
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-import re
 from mp_route_data_collector import get_mountainproject_route_data
-
-
-# def fetch_routes_selenium(url):
-#     """
-#     Given the url for a crag from mountainproject, collect the urls for all available routes.
-#     """
-#     options = Options()
-#     options.add_argument('--headless')
-#     driver = webdriver.Chrome(options=options)
-    
-#     driver.get(url)
-#     time.sleep(1)  # wait for JS to load
-    
-#     soup = BeautifulSoup(driver.page_source, 'html.parser')
-#     routes = soup.select('tr.route-row')
-    
-#     route_links = []
-#     for route in routes:
-#         a_tag = route.select_one('a[href*="/route/"]')
-#         if a_tag:
-#             route_links.append(a_tag['href'])
-    
-#     driver.quit()
-#     return route_links
 
 def fetch_sidebar_links(soup):
     # Check if there are route table elements
@@ -141,7 +112,6 @@ if __name__ == "__main__":
     # test_area_url = "https://www.mountainproject.com/area/105746283/the-needle"
     test_greater_area = "https://www.mountainproject.com/area/105714282/spearfish-canyon"
     # test_leaf_area = "https://www.mountainproject.com/area/105865091/big-picture-wall"
-    # urls = fetch_routes_selenium(test_area)
     # print(f"found {len(urls)} routes")
     # print(urls)
     tree = dfs_mountain_project(test_greater_area)
