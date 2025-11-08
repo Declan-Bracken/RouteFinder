@@ -42,32 +42,32 @@ def collect_description_details(description_table):
         description_details[title[0].text.strip()] = description[0].text.strip()
     return description_details
 
-def get_mountainproject_route_data(route_url):
-    assert "/route/" in route_url, "'route_url' variable must be a valid mountain project route. Got {route_url}"
-    
-    html = requests.get(route_url).text
-    soup = BeautifulSoup(html, 'html.parser')
-
+def get_mountainproject_route_data(soup):
+    # Soup is a BeautifulSoup4 Html tree object
     route_name = soup.select("h1")[0].text.strip()
     route_grade = soup.select(".rateYDS")[0].text.strip()
-    # Get route details
+    # Get route details (type, length, FA, site views)
     details_table = soup.select(".description-details")[0]
     route_details = collect_route_details(details_table)
     # Get images
     img_containers = soup.select(".img-container.position-relative")
     all_imgs = collect_images(img_containers)
-    # Get description details
+    # Get description details (sentences describing route or necessary protection)
     description_table= soup.select(".mt-2.max-height.max-height-md-800.max-height-xs-600")
     description_details = collect_description_details(description_table)
 
     # Deduplicate while preserving order
     unique_imgs = list(dict.fromkeys(all_imgs))
 
-    return {"name": route_name, "grade": route_grade, "images": unique_imgs, "url": route_url, **route_details, **description_details} #, "description": route_details
+    return {"name": route_name, "grade": route_grade, "images": unique_imgs, **route_details, **description_details} #, "description": route_details
 
 if __name__ == "__main__":
     test_route_url = "https://www.mountainproject.com/route/108221353/the-camel"
-    route_data = get_mountainproject_route_data(test_route_url)
+    test_route_url_2 = "https://www.mountainproject.com/route/108221381/the-big-f"
+    html = requests.get(test_route_url_2).text
+    print(html)
+    soup = BeautifulSoup(html, parser = "html.parser")
+    route_data = get_mountainproject_route_data(soup)
     for key, value in route_data.items():
         print(key.upper())
         print(value, "\n")
