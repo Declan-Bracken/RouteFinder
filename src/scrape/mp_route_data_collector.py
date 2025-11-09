@@ -34,7 +34,6 @@ def collect_images(img_containers):
     return all_imgs
 
 def collect_description_details(description_table):
-    
     description_details = {}
     for description in description_table:
         title = description.select(".mt-2")
@@ -71,3 +70,5 @@ if __name__ == "__main__":
     for key, value in route_data.items():
         print(key.upper())
         print(value, "\n")
+
+    # Okay now let's try to make the same thing for the crag

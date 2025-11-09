@@ -180,10 +180,7 @@ def print_nicely(iterable):
 
 if __name__ == "__main__":
     # master_sitemap_url = "https://www.mountainproject.com/sitemap.xml"
-    # test_area_url = "https://www.mountainproject.com/area/105746283/the-needle"
-    # test_greater_area = "https://www.mountainproject.com/area/105714282/spearfish-canyon"
-    # test_leaf_area = "https://www.mountainproject.com/area/105868936/sunshine"
-    url = "https://www.mountainproject.com/area/106358863/mount-nemo"
+    url = "https://www.mountainproject.com/area/106358845/golden-horseshoe"
     area_name = url.split("/")[-1].replace("-","_")
 
     visited = set()
@@ -212,6 +209,7 @@ if __name__ == "__main__":
             logging.info(f"{err['url']} -> {err['error']}")
         logging.info(f"Total failed URLs: {len(FAILED_URLS)}")
 
-    bars = "---" * 10 
-    indent = "   " * 8
-    print(f"{bars}Program Completed{bars}\n{indent}Program Time: {end_time - start_time:.2f}\n{indent}# of Areas Visisted {AREAS_VISITED}\n{indent}# of Routes Collected {ROUTES_COLLECTED}\n{indent}# of Images Collected {IMAGES_COLLECTED}")
+    logging.info(f"Program Time: {end_time - start_time:.2f}")
+    logging.info(f"# of Areas Visisted {AREAS_VISITED}")
+    logging.info(f"# of Routes Collected {ROUTES_COLLECTED}")
+    logging.info(f"# of Images Collected {IMAGES_COLLECTED}")

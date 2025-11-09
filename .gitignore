@@ -1,2 +1,4 @@
 *.pyc
 __pycache__/
+*.log
+src/data/cache
