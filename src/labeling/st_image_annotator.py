@@ -8,9 +8,9 @@ from PIL import Image
 from pathlib import Path
 
 # ============== CONFIG ==============
-AREA_NAME = "mount_nemo"
+AREA_NAME = "ontario_south_bouldering_and_rock"
 DATA_PATH = Path(f"src/data/trees/{AREA_NAME}_tree.json")
-TAGGED_PATH = Path(f"src/data/tagged_trees/tagged_{AREA_NAME}_tree.json")
+TAGGED_PATH = Path(f"src/data/tagged_trees/tagged_{AREA_NAME}_tree_test.json")
 CACHE_DIR = Path("src/data/cache")
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 PREFETCH_LIMIT = 10  # Number of images to load ahead
@@ -49,6 +49,13 @@ async def fetch_image(session, url):
                 f.write(content)
             return Image.open(io.BytesIO(content))
     except Exception:
+        async with session.get(url.replace("large", "medium")) as resp:
+            resp.raise_for_status()
+            content = await resp.read()
+            with open(filename, "wb") as f:
+                f.write(content)
+            return Image.open(io.BytesIO(content))
+    finally:
         return None
 
 async def prefetch_cached_images(urls):
@@ -94,6 +101,12 @@ def load_data(DATA_PATH):
 # -------- Main Streamlit App --------
 st.title("🧗 Route Image Tagger")
 all_images = load_data(DATA_PATH)
+st.text("""Rules:
+1. Discard photos where the climber or person blocks a significant portion of the route/boulder.
+2. Discard topo images, maps, annotated photos, close-ups of bolts, anchors, or scenery not showing the route/boulder.
+3. Keep if the full line/boulder of the climb is visible from base to top (even if a rope or a small climber is visible).
+4. Prefer front-on ground perspectives; viewing the route/boulder as a climber would before they begin.
+        """)
 
 # Load existing tags
 tagged = json.load(open(TAGGED_PATH)) if TAGGED_PATH.exists() else {}
@@ -114,17 +127,19 @@ if idx >= len(untagged):
     idx = 0
 
 current = untagged[0]
+# print(f"CURRENT: {current['url']}")
 # Retrieve the number of images currently cached
 n_cached_images = len(list(CACHE_DIR.glob("*.jpg")))
 
 # Check if we need to fetch images:
 if n_cached_images == 0: # This asks if we've already run out of cached imagesd
     next_urls = [img["url"] for img in untagged[0:PREFETCH_LIMIT]]
-    prefetched_images = asyncio.run(prefetch_cached_images(next_urls))
-    current_img = prefetched_images[0]
-else:
-    current_img = load_image(current["url"])
+    print(next_urls)
+    # [print(F"CACHING: {url}") for url in next_urls]
+    _ = asyncio.run(prefetch_cached_images(next_urls))
 
+current_img = load_image(current["url"])
+print(current["url"])
 image_cache_location = CACHE_DIR / (current["url"].split("/")[-1].split("?")[0])
 
 if current_img:
@@ -132,9 +147,22 @@ if current_img:
 else:
     st.warning("⚠️ Could not load image.")
     if st.button("Skip"):
+        tagged[current["url"]] = {
+            "route": current["route"],
+            "tag": "skipped"
+        }
+        with open(TAGGED_PATH, "w") as f:
+            json.dump(tagged, f, indent=2)
+        # remove the cached image
+        remove_image_from_cache(image_cache_location)
         st.session_state["index"] = idx + 1
         st.rerun()
-    st.stop()
+
+    if st.button("Refresh Rerun", use_container_width = True):
+        # for image_path in list(CACHE_DIR.glob("*.jpg")):
+        #     remove_image_from_cache(str(image_path))
+        st.rerun()
+    # st.rerun()
 
 # --- ACTION BUTTONS ---
 col1, col2, col3 = st.columns([2, 1, 2])
@@ -163,3 +191,6 @@ with col3:
         remove_image_from_cache(image_cache_location)
         st.session_state["index"] = idx + 1
         st.rerun()
+
+
+# Note: Keep fearless warrior 1*
