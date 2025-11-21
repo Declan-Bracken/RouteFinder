@@ -41,28 +41,38 @@ def collect_description_details(description_table):
         description_details[title[0].text.strip()] = description[0].text.strip()
     return description_details
 
+def safe_call(fn, *args, default=None, **kwargs):
+    """
+    Calls `fn` with given arguments, returns `default` if an exception occurs.
+    """
+    try:
+        return fn(*args, **kwargs)
+    except Exception:
+        return default
+
+
 def get_mountainproject_route_data(soup):
-    # Soup is a BeautifulSoup4 Html tree object
-    route_name = soup.select("h1")[0].text.strip()
-    route_grade = soup.select(".rateYDS")[0].text.strip()
-    # Get route details (type, length, FA, site views)
-    details_table = soup.select(".description-details")[0]
-    route_details = collect_route_details(details_table)
-    # Get images
-    img_containers = soup.select(".img-container.position-relative")
-    all_imgs = collect_images(img_containers)
-    # Get description details (sentences describing route or necessary protection)
-    description_table= soup.select(".mt-2.max-height.max-height-md-800.max-height-xs-600")
-    description_details = collect_description_details(description_table)
+    route_name = safe_call(lambda: soup.select("h1")[0].text.strip())
+    route_grade = safe_call(lambda: soup.select(".rateYDS")[0].text.strip())
 
-    # Deduplicate while preserving order
-    unique_imgs = list(dict.fromkeys(all_imgs))
+    details_table = safe_call(lambda: soup.select(".description-details")[0])
+    route_details = safe_call(collect_route_details, details_table, default={})  # return empty dict if fails
 
-    return {"name": route_name, "grade": route_grade, "images": unique_imgs, **route_details, **description_details} #, "description": route_details
+    img_containers = safe_call(lambda: soup.select(".img-container.position-relative"), default=[])
+    all_imgs = safe_call(collect_images, img_containers, default=[])
+
+    description_table = safe_call(lambda: soup.select(".mt-2.max-height.max-height-md-800.max-height-xs-600"), default=[])
+    description_details = safe_call(collect_description_details, description_table, default={})
+
+    # Deduplicate images
+    unique_imgs = list(dict.fromkeys(all_imgs or []))
+
+    return {"name": route_name, "grade": route_grade, "images": unique_imgs, **(route_details or {}), **(description_details or {})} #, "description": route_details
 
 if __name__ == "__main__":
     test_route_url = "https://www.mountainproject.com/route/108221353/the-camel"
-    test_route_url_2 = "https://www.mountainproject.com/route/108221381/the-big-f"
+    test_route_url_2 = "https://www.mountainproject.com/route/105762594/grizzly-couloir"
+
     html = requests.get(test_route_url_2).text
     print(html)
     soup = BeautifulSoup(html, parser = "html.parser")
