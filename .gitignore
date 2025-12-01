@@ -2,3 +2,9 @@
 __pycache__/
 *.log
 src/data/cache
+src/data/trees/mountain_project_tree.json.gz
+*.DS_Store
+*scraper.log
+models/pretrained/divo_v1.zip
+*.ckpt
+
