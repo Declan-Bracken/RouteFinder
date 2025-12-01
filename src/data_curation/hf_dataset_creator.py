@@ -6,16 +6,17 @@ import gzip, json
 import logging
 from PIL import Image
 import hashlib
-from utils.extract import extract_with_lineage
+from src.utils.extract import extract_with_lineage
 import shutil
 from tqdm import tqdm
+import sys
 
 # ---------------- Semaphore ----------------
 CONCURRENCY_LIMIT = 50
 BATCH_SIZE = 500
 HF_REPO = "DeclanBracken/RouteFinderDataset"
-PROCESSED_FILE = "data/uploaded_image_indices/processed_urls.json"
-CACHE_DIR = Path("data/cache")
+PROCESSED_FILE = "src/data/uploaded_image_indices/processed_urls.json"
+CACHE_DIR = Path("src/data/cache")
 
 semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
 COUNTER_LOCK = asyncio.Lock()
@@ -40,7 +41,7 @@ def load_flattened_tree(file_path):
         return extract_with_lineage(data)
 
 # ---------------- Async download with size check ----------------
-async def fetch_image_limited(session, url, cache_dir, min_size=(224, 224)):
+async def fetch_image_limited(session, url, cache_dir, semaphore, min_size=(224, 224)):
     global FAILED_COUNT
     async with semaphore:
         try:
@@ -57,24 +58,24 @@ async def fetch_image_limited(session, url, cache_dir, min_size=(224, 224)):
 
                 # Save to cache
                 filename = cache_dir / (url.split("/")[-1].split("?")[0])
-                img.save(filename)
+                img.save(filename, format="JPEG", quality=90, optimize = True)
                 return img, url
-        except Exception:
+        except Exception as e:
             async with COUNTER_LOCK:
                 FAILED_COUNT += 1
-            # logging.warning(f"Failed to fetch {url}: {e}") # honestly this is just messy
+            logging.warning(f"Failed to fetch {url}: {e}") # honestly this is just messy
             # fallback or failure
             return None, url
 
-async def prefetch_cached_images_limited(urls, cache_dir, min_size=(224, 224)):
+async def prefetch_cached_images_limited(urls, cache_dir, semaphore, min_size=(224, 224)):
     async with aiohttp.ClientSession() as session:
-        tasks = [fetch_image_limited(session, url, cache_dir, min_size) for url in urls]
+        tasks = [fetch_image_limited(session, url, cache_dir, semaphore, min_size) for url in urls]
         results = await asyncio.gather(*tasks)
         # Filter out failed / small downloads
         return [r for r in results if r[0] is not None]
 
 # ---------------- Download N images with dedupe & size check ----------------
-async def download_images(flattened_routes, cache_dir, max_images=5000, batch_size = BATCH_SIZE):
+async def download_images(flattened_routes, cache_dir, semaphore, max_images=5000, batch_size = BATCH_SIZE):
     global FAILED_COUNT
     cache_dir.mkdir(parents=True, exist_ok=True)
     
@@ -109,8 +110,6 @@ async def download_images(flattened_routes, cache_dir, max_images=5000, batch_si
 
     # Process in batches
     for start in tqdm(range(0, len(metadata), batch_size), desc="Downloading batches"):
-        if start <=4000:
-            continue
         batch_count = (start + 1)//BATCH_SIZE
         logging.info(f"Batch {start} in progress")
         batch = metadata[start:start+batch_size]
@@ -121,7 +120,7 @@ async def download_images(flattened_routes, cache_dir, max_images=5000, batch_si
             return
 
         urls = [x["url"] for x in batch]
-        downloaded = await prefetch_cached_images_limited(urls, cache_dir)
+        downloaded = await prefetch_cached_images_limited(urls, cache_dir, semaphore)
         logging.info(f"Completed downloading {len(downloaded)} images")
 
         batch_records = []
@@ -182,10 +181,10 @@ def save_processed(processed):
 
 # ---------------- Run ----------------
 if __name__ == "__main__":
-    tree_path = "data/trees/mountain_project_tree.json.gz"
+    tree_path = "src/data/trees/mountain_project_tree.json.gz"
     flattened_routes = load_flattened_tree(tree_path)
     try:
-        asyncio.run(download_images(flattened_routes, CACHE_DIR, max_images = 10000))
+        asyncio.run(download_images(flattened_routes, CACHE_DIR, semaphore, max_images = 10000))
     finally:
         if CACHE_DIR.exists():
             shutil.rmtree(CACHE_DIR)
