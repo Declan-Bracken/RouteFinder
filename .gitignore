@@ -1,10 +1,22 @@
+# Python
 *.pyc
 __pycache__/
-*.log
-src/data/cache
-src/data/trees/mountain_project_tree.json.gz
-*.DS_Store
-*scraper.log
-models/pretrained/divo_v1.zip
-*.ckpt
+*.egg-info/
+dist/
+build/
+.venv/
 
+# Logs
+*.log
+
+# Data — large files and ephemeral cache
+data/cache/
+data/trees/mountain_project_tree.json.gz
+
+# Model checkpoints
+models/pretrained/
+*.ckpt
+*.zip
+
+# OS
+.DS_Store

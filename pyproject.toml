@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "routefinder"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = [
+    "torch",
+    "torchvision",
+    "timm",
+    "pytorch-lightning",
+    "pytorch-metric-learning",
+    "lightly",
+    "Pillow",
+    "aiohttp",
+    "requests",
+    "beautifulsoup4",
+    "lxml",
+    "datasets",
+    "pandas",
+    "tqdm",
+    "psycopg2-binary",
+]
+
+[project.optional-dependencies]
+app = ["fastapi", "uvicorn", "python-multipart", "pgvector"]
+dev = ["streamlit", "matplotlib", "seaborn", "ipykernel"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["routefinder*"]
