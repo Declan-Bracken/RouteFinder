@@ -28,6 +28,7 @@ from torch.utils.data import Dataset, DataLoader, BatchSampler
 import torchvision.transforms as T
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
+from pytorch_lightning.loggers import CSVLogger
 from sklearn.neighbors import NearestNeighbors
 from datasets import load_dataset
 import timm
@@ -348,10 +349,12 @@ def train(cfg: Config = None):
         filename="routefinder-{epoch:02d}-{val_recall@1:.3f}",
         save_top_k=1, mode="max", save_last=True,
     )
+    logger = CSVLogger(cfg.checkpoint_dir, name="", version="")
     trainer = pl.Trainer(
         max_epochs=cfg.max_epochs, accelerator="gpu", devices=1,
         precision=cfg.precision, log_every_n_steps=1,
         gradient_clip_val=cfg.gradient_clip,
+        logger=logger,
         callbacks=[
             ckpt_cb,
             EarlyStopping("val_recall@1", patience=cfg.patience, mode="max"),
@@ -360,8 +363,9 @@ def train(cfg: Config = None):
         ],
     )
     trainer.fit(model, train_loader, val_loader)
+    metrics_csv = os.path.join(cfg.checkpoint_dir, "metrics.csv")
     print(f"\nBest checkpoint: {ckpt_cb.best_model_path}")
-    return ckpt_cb.best_model_path
+    return ckpt_cb.best_model_path, metrics_csv
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
