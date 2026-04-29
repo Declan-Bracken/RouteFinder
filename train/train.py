@@ -344,9 +344,9 @@ def train(cfg: Config = None):
     )
 
     ckpt_cb = ModelCheckpoint(
-        monitor="val_loss", dirpath=cfg.checkpoint_dir,
-        filename="routefinder-{epoch:02d}-{val_loss:.3f}",
-        save_top_k=1, mode="min", save_last=True,
+        monitor="val_recall@1", dirpath=cfg.checkpoint_dir,
+        filename="routefinder-{epoch:02d}-{val_recall@1:.3f}",
+        save_top_k=1, mode="max", save_last=True,
     )
     trainer = pl.Trainer(
         max_epochs=cfg.max_epochs, accelerator="gpu", devices=1,
@@ -354,7 +354,7 @@ def train(cfg: Config = None):
         gradient_clip_val=cfg.gradient_clip,
         callbacks=[
             ckpt_cb,
-            EarlyStopping("val_loss", patience=cfg.patience, mode="min"),
+            EarlyStopping("val_recall@1", patience=cfg.patience, mode="max"),
             LearningRateMonitor("epoch"),
             RecallAtKCallback(test_split, every_n_epochs=cfg.recall_every_n_epochs),
         ],
