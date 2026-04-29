@@ -62,7 +62,7 @@ class Config:
     precision: int = 16
 
     # Eval
-    recall_every_n_epochs: int = 5  # how often Recall@K is computed on the val split
+    recall_every_n_epochs: int = 1  # every epoch — val set is small so overhead is negligible
     test_split: float = 0.2         # fraction of routes held out for validation
 
     # I/O
@@ -357,9 +357,9 @@ def train(cfg: Config = None):
         logger=logger,
         callbacks=[
             ckpt_cb,
-            EarlyStopping("val_recall@1", patience=cfg.patience, mode="max"),
             LearningRateMonitor("epoch"),
             RecallAtKCallback(test_split, every_n_epochs=cfg.recall_every_n_epochs),
+            EarlyStopping("val_recall@1", patience=cfg.patience, mode="max", strict=False),
         ],
     )
     trainer.fit(model, train_loader, val_loader)
