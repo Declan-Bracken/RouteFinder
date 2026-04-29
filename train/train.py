@@ -280,7 +280,8 @@ class RecallAtKCallback(pl.Callback):
         if (trainer.current_epoch + 1) % self.every_n_epochs != 0:
             return
 
-        loader = DataLoader(EvalDataset(self.val_ds), batch_size=64, num_workers=2)
+        # num_workers=0 avoids spawning subprocesses that re-trigger this callback
+        loader = DataLoader(EvalDataset(self.val_ds), batch_size=64, num_workers=0)
         device = next(pl_module.parameters()).device
         pl_module.eval()
 
@@ -294,7 +295,6 @@ class RecallAtKCallback(pl.Callback):
         knn.fit(emb)
         _, indices = knn.kneighbors(emb)
 
-        print(f"\n── Recall@K (epoch {trainer.current_epoch + 1}) ──")
         for k in self.ks:
             hits = sum(
                 labels[i] in [labels[j] for j in indices[i][1:k + 1]]
@@ -302,7 +302,6 @@ class RecallAtKCallback(pl.Callback):
             )
             recall = hits / len(labels)
             pl_module.log(f"val_recall@{k}", recall, prog_bar=(k == 1))
-            print(f"  Recall@{k}: {recall:.4f}")
 
 
 # ── Training ──────────────────────────────────────────────────────────────────
