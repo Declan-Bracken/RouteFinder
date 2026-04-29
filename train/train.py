@@ -1,22 +1,26 @@
 """
-Route retrieval training — Kaggle-portable two-phase pipeline.
+Route retrieval training — DINOv2-Small backbone + SupCon projection head.
 
-Phase 1 — SimCLR pretraining on RouteFinderDataset (~8k noisy MP images)
-Phase 2 — SupCon fine-tuning on RouteFinderDatasetV2 (~573 curated multiview pairs)
+Architecture:
+  DINOv2-S/14 (frozen, 384-d) → projection head (384 → 128, L2-norm) → SupConLoss
+
+Why this instead of training SimCLR from scratch:
+  DINOv2 was pre-trained on 142M images with a far richer objective. Fine-tuning
+  only a small projection head with SupCon gives better retrieval than a SimCLR
+  backbone trained on ~8k noisy images, and trains in minutes instead of hours.
 
 On Kaggle:
-  Add HF token to Kaggle secrets as HF_TOKEN.
-  Run: python train.py --phase both
-  Or skip phase 1: python train.py --phase supcon --simclr_ckpt /path/to/simclr.ckpt
+  1. Enable internet access in notebook settings
+  2. Add HF_TOKEN to Kaggle secrets (Add-ons → Secrets)
+  3. Run the kaggle_train.ipynb notebook — it handles setup and calls this script
 """
 
 import os
 import random
 import argparse
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from collections import defaultdict
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -28,76 +32,60 @@ from sklearn.neighbors import NearestNeighbors
 from datasets import load_dataset
 import timm
 from pytorch_metric_learning.losses import SupConLoss
-from lightly.loss import NTXentLoss
 
 
-# ── Configs ───────────────────────────────────────────────────────────────────
-
-@dataclass
-class SimCLRConfig:
-    hf_dataset: str = "DeclanBracken/RouteFinderDataset"
-    batch_size: int = 64
-    lr: float = 5e-4
-    temperature: float = 0.1
-    weight_decay: float = 1e-4
-    max_epochs: int = 50
-    warmup_epochs: int = 5
-    patience: int = 10
-    num_workers: int = 4
-    checkpoint_dir: str = "checkpoints"
-    precision: int = 16
-
+# ── Config ────────────────────────────────────────────────────────────────────
 
 @dataclass
-class SupConConfig:
+class Config:
+    # Data
     hf_dataset: str = "DeclanBracken/RouteFinderDatasetV2"
-    simclr_ckpt: str = None         # path to SimCLR checkpoint; if None, use ImageNet weights
-    batch_size: int = 256
-    lr: float = 1e-4
+    hf_token: str = None            # or set HF_TOKEN env var
+
+    # Model
+    backbone: str = "vit_small_patch14_dinov2.lvd142m"
+    embed_dim: int = 384            # DINOv2-S output dim — don't change unless switching backbone
+    proj_dim: int = 128             # projection head output dim
+    num_unfrozen_blocks: int = 0    # unfreeze last N transformer blocks (0 = fully frozen backbone)
+
+    # Training
+    n_views: int = 2                # augmented views per image per batch
+    batch_size: int = 128           # actual GPU batch = batch_size (sampler divides by n_views internally)
+    lr: float = 1e-3                # higher LR is fine — only the small proj head is being trained
     temperature: float = 0.07
-    weight_decay: float = 2e-4
-    num_unfrozen_blocks: int = 1    # how many of resnet's 4 layer groups to unfreeze
-    n_views: int = 2                # augmented views per image — key multiplier for small datasets
+    weight_decay: float = 1e-4
     max_epochs: int = 100
     warmup_epochs: int = 5
     patience: int = 15
+    gradient_clip: float = 1.0
+    precision: int = 16
+
+    # Eval
+    recall_every_n_epochs: int = 5  # how often Recall@K is computed on the val split
+    test_split: float = 0.2         # fraction of routes held out for validation
+
+    # I/O
     num_workers: int = 4
     checkpoint_dir: str = "checkpoints"
-    precision: int = 16
-    gradient_clip: float = 1.0
-    recall_every_n_epochs: int = 5  # how often to compute Recall@K on val set
-    test_split: float = 0.2
 
 
 # ── Augmentations ─────────────────────────────────────────────────────────────
 #
-# Key domain gap issues for field photos:
-#   - Camera held at any angle          → RandomPerspective + RandomRotation
-#   - Variable distance from wall       → RandomResizedCrop (wide scale range)
-#   - Outdoor lighting variance         → ColorJitter + RandomGrayscale
-#   - Blur from hand movement           → GaussianBlur
+# Key domain gap between MP photos and real field captures:
+#   - Phone held at any angle          → RandomPerspective + RandomRotation
+#   - Variable distance from wall      → RandomResizedCrop (wide scale range)
+#   - Outdoor lighting changes         → ColorJitter + RandomGrayscale
+#   - Hand movement / focus blur       → GaussianBlur
 
-SIMCLR_TRANSFORM = T.Compose([
+TRAIN_TRANSFORM = T.Compose([
     T.Resize(256),
-    T.RandomResizedCrop(224, scale=(0.4, 1.0)),
+    T.RandomResizedCrop(224, scale=(0.5, 1.0)),
     T.RandomHorizontalFlip(),
-    T.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1),
-    T.RandomGrayscale(p=0.2),
-    T.GaussianBlur(kernel_size=23, sigma=(0.1, 2.0)),
+    T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.05),
+    T.RandomGrayscale(p=0.1),
+    T.GaussianBlur(kernel_size=3, sigma=(0.1, 1.5)),
     T.RandomPerspective(distortion_scale=0.3, p=0.5),
     T.RandomRotation(15),
-    T.ToTensor(),
-    T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-])
-
-SUPCON_TRANSFORM = T.Compose([
-    T.Resize(256),
-    T.RandomResizedCrop(224, scale=(0.6, 1.0)),
-    T.RandomHorizontalFlip(),
-    T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05),
-    T.GaussianBlur(kernel_size=3, sigma=(0.1, 1.0)),
-    T.RandomPerspective(distortion_scale=0.2, p=0.3),
-    T.RandomRotation(10),
     T.ToTensor(),
     T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
@@ -112,24 +100,11 @@ EVAL_TRANSFORM = T.Compose([
 
 # ── Datasets ──────────────────────────────────────────────────────────────────
 
-class SimCLRDataset(Dataset):
-    """Returns two independently augmented views of each image."""
-    def __init__(self, hf_dataset):
-        self.ds = hf_dataset
-
-    def __len__(self):
-        return len(self.ds)
-
-    def __getitem__(self, idx):
-        img = self.ds[idx]["image"].convert("RGB")
-        return SIMCLR_TRANSFORM(img), SIMCLR_TRANSFORM(img)
-
-
 class SupConDataset(Dataset):
     """
-    Returns n_views augmented views per image as a stacked tensor (n_views, C, H, W).
-    Multiple views of the same image act as additional positives in SupCon,
-    which is critical when fine-tuning data is scarce.
+    Returns n_views independently augmented views per image, stacked as (n_views, C, H, W).
+    With only ~573 fine-tuning images, multiple views per image are the primary way
+    to increase the number of positive pairs the loss sees per epoch.
     """
     def __init__(self, hf_dataset, n_views=2):
         self.ds = hf_dataset
@@ -141,7 +116,7 @@ class SupConDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.ds[idx]
         img = sample["image"].convert("RGB")
-        views = torch.stack([SUPCON_TRANSFORM(img) for _ in range(self.n_views)])
+        views = torch.stack([TRAIN_TRANSFORM(img) for _ in range(self.n_views)])
         return views, torch.tensor(sample["label"], dtype=torch.long)
 
 
@@ -158,7 +133,7 @@ class EvalDataset(Dataset):
 
 
 def group_by_label(hf_dataset):
-    """Return list-of-lists: each inner list is indices of one route."""
+    """Returns list-of-lists: each inner list holds the indices of one route."""
     groups = defaultdict(list)
     for i, sample in enumerate(hf_dataset):
         groups[sample["label"]].append(i)
@@ -167,8 +142,9 @@ def group_by_label(hf_dataset):
 
 class MultiRouteBatchSampler(BatchSampler):
     """
-    Packs multiple full routes into each batch.
-    SupCon requires multiple samples per class within a batch to form positives.
+    Packs several complete routes into each batch. SupCon requires multiple
+    samples per class within a batch — without this, most anchors have no
+    positives and the loss is meaningless.
     """
     def __init__(self, route_groups, max_batch_size, shuffle=True):
         self.groups = route_groups
@@ -199,9 +175,11 @@ def supcon_collate(batch):
     return torch.stack(views), torch.stack(labels)
 
 
-# ── Models ────────────────────────────────────────────────────────────────────
+# ── Model ─────────────────────────────────────────────────────────────────────
 
-def _make_warmup_cosine_scheduler(optimizer, warmup_epochs, total_epochs):
+def _make_lr_scheduler(optimizer, warmup_epochs, total_epochs):
+    """Linear warmup then cosine decay. Warmup prevents the chaotic early
+    training instability seen when fine-tuning with a flat LR."""
     warmup = torch.optim.lr_scheduler.LinearLR(
         optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_epochs
     )
@@ -213,86 +191,74 @@ def _make_warmup_cosine_scheduler(optimizer, warmup_epochs, total_epochs):
     )
 
 
-class SimCLREncoder(pl.LightningModule):
-    def __init__(self, lr=5e-4, temperature=0.1, weight_decay=1e-4, warmup_epochs=5):
+class RouteFinderModel(pl.LightningModule):
+    """
+    Frozen DINOv2-Small backbone + small projection head trained with SupConLoss.
+
+    At inference use model.encode(image_tensor) — the L2-normalised projection
+    head output is the embedding you store in the DB and query against.
+
+    If you later want to unfreeze and fine-tune backbone blocks, increase
+    num_unfrozen_blocks (0 = fully frozen, 4 = last 4 of 12 ViT blocks unfrozen).
+    With more field data, unfreezing 1-2 blocks is worth trying.
+    """
+    def __init__(self, embed_dim=384, proj_dim=128, lr=1e-3, temperature=0.07,
+                 weight_decay=1e-4, warmup_epochs=5, num_unfrozen_blocks=0,
+                 backbone_name="vit_small_patch14_dinov2.lvd142m"):
         super().__init__()
         self.save_hyperparameters()
-        self.backbone = timm.create_model("resnet50", pretrained=True, num_classes=0)
-        self.proj = nn.Sequential(
-            nn.Linear(2048, 2048), nn.ReLU(inplace=True), nn.Linear(2048, 128)
-        )
-        self.criterion = NTXentLoss(temperature=temperature)
 
-    def forward(self, x):
+        self.backbone = timm.create_model(
+            backbone_name, pretrained=True, num_classes=0, img_size=224
+        )
+
+        # Freeze everything first
+        for p in self.backbone.parameters():
+            p.requires_grad = False
+
+        # Optionally unfreeze the last N transformer blocks
+        if num_unfrozen_blocks > 0:
+            for block in self.backbone.blocks[-num_unfrozen_blocks:]:
+                for p in block.parameters():
+                    p.requires_grad = True
+            # Always unfreeze the final LayerNorm
+            for p in self.backbone.norm.parameters():
+                p.requires_grad = True
+
+        self.proj = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim),
+            nn.GELU(),
+            nn.Linear(embed_dim, proj_dim),
+        )
+        self.loss_fn = SupConLoss(temperature=temperature)
+
+    def encode(self, x):
+        """L2-normalised embedding — use this for DB storage and KNN queries."""
         return F.normalize(self.proj(self.backbone(x)), dim=-1)
 
+    def forward(self, x):
+        return self.encode(x)
+
+    def _shared_step(self, batch):
+        views, labels = batch           # views: (B, n_views, C, H, W)
+        B, V, C, H, W = views.shape
+        z = self(views.view(B * V, C, H, W))
+        labels_exp = labels.unsqueeze(1).expand(B, V).reshape(B * V).to(self.device)
+        return self.loss_fn(z, labels_exp)
+
     def training_step(self, batch, _):
-        x1, x2 = batch
-        loss = self.criterion(self(x1), self(x2))
+        loss = self._shared_step(batch)
         self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
         return loss
 
     def validation_step(self, batch, _):
-        x1, x2 = batch
-        loss = self.criterion(self(x1), self(x2))
+        loss = self._shared_step(batch)
         self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
 
     def configure_optimizers(self):
-        opt = torch.optim.AdamW(
-            self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay
-        )
-        sched = _make_warmup_cosine_scheduler(opt, self.hparams.warmup_epochs, self.trainer.max_epochs)
-        return [opt], [{"scheduler": sched, "interval": "epoch"}]
-
-
-class SupConModel(pl.LightningModule):
-    def __init__(self, backbone, lr=1e-4, temperature=0.07, weight_decay=2e-4,
-                 num_unfrozen_blocks=1, warmup_epochs=5):
-        super().__init__()
-        self.save_hyperparameters(ignore=["backbone"])
-        self.backbone = backbone
-        self.loss_fn = SupConLoss(temperature=temperature)
-
-        for p in self.backbone.parameters():
-            p.requires_grad = False
-
-        layers = [self.backbone.layer1, self.backbone.layer2,
-                  self.backbone.layer3, self.backbone.layer4]
-        for layer in layers[-num_unfrozen_blocks:]:
-            for p in layer.parameters():
-                p.requires_grad = True
-
-        # Keep BatchNorm stats fixed in frozen layers
-        for m in self.backbone.modules():
-            if isinstance(m, nn.BatchNorm2d):
-                m.eval()
-
-    def forward(self, x):
-        return F.normalize(self.backbone(x), dim=-1)
-
-    def training_step(self, batch, _):
-        views, labels = batch           # views: (B, n_views, C, H, W)
-        B, V, C, H, W = views.shape
-        z = self(views.view(B * V, C, H, W))
-        labels_expanded = labels.unsqueeze(1).expand(B, V).reshape(B * V).to(self.device)
-        loss = self.loss_fn(z, labels_expanded)
-        self.log("supcon_train_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
-        return loss
-
-    def validation_step(self, batch, _):
-        views, labels = batch
-        B, V, C, H, W = views.shape
-        z = self(views.view(B * V, C, H, W))
-        labels_expanded = labels.unsqueeze(1).expand(B, V).reshape(B * V).to(self.device)
-        loss = self.loss_fn(z, labels_expanded)
-        self.log("supcon_val_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
-
-    def configure_optimizers(self):
-        opt = torch.optim.AdamW(
-            filter(lambda p: p.requires_grad, self.parameters()),
-            lr=self.hparams.lr, weight_decay=self.hparams.weight_decay,
-        )
-        sched = _make_warmup_cosine_scheduler(opt, self.hparams.warmup_epochs, self.trainer.max_epochs)
+        params = filter(lambda p: p.requires_grad, self.parameters())
+        opt = torch.optim.AdamW(params, lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
+        sched = _make_lr_scheduler(opt, self.hparams.warmup_epochs, self.trainer.max_epochs)
         return [opt], [{"scheduler": sched, "interval": "epoch"}]
 
 
@@ -300,8 +266,9 @@ class SupConModel(pl.LightningModule):
 
 class RecallAtKCallback(pl.Callback):
     """
-    Computes Recall@K on the val split every N epochs using the backbone directly.
-    This is the metric that actually matters for retrieval — not contrastive loss.
+    Computes Recall@K on the held-out val split every N epochs.
+    This is the metric that actually matters — not contrastive loss,
+    which is an indirect proxy and hard to interpret across runs.
     """
     def __init__(self, val_hf_dataset, every_n_epochs=5, ks=(1, 3, 5)):
         self.val_ds = val_hf_dataset
@@ -319,8 +286,7 @@ class RecallAtKCallback(pl.Callback):
 
         embeddings, labels = [], []
         for imgs, lbls in loader:
-            z = pl_module(imgs.to(device))
-            embeddings.append(z.cpu())
+            embeddings.append(pl_module(imgs.to(device)).cpu())
             labels.extend(lbls.tolist() if hasattr(lbls, "tolist") else lbls)
 
         emb = torch.cat(embeddings).numpy()
@@ -328,6 +294,7 @@ class RecallAtKCallback(pl.Callback):
         knn.fit(emb)
         _, indices = knn.kneighbors(emb)
 
+        print(f"\n── Recall@K (epoch {trainer.current_epoch + 1}) ──")
         for k in self.ks:
             hits = sum(
                 labels[i] in [labels[j] for j in indices[i][1:k + 1]]
@@ -338,81 +305,48 @@ class RecallAtKCallback(pl.Callback):
             print(f"  Recall@{k}: {recall:.4f}")
 
 
-# ── Training phases ───────────────────────────────────────────────────────────
+# ── Training ──────────────────────────────────────────────────────────────────
 
-def train_simclr(cfg: SimCLRConfig, hf_token: str = None):
-    token = hf_token or os.environ.get("HF_TOKEN")
-    ds = load_dataset(cfg.hf_dataset, token=token)
-    train_loader = DataLoader(
-        SimCLRDataset(ds["train"]), batch_size=cfg.batch_size,
-        shuffle=True, num_workers=cfg.num_workers, pin_memory=True,
-    )
-    val_loader = DataLoader(
-        SimCLRDataset(ds["val"]), batch_size=cfg.batch_size,
-        shuffle=False, num_workers=cfg.num_workers, pin_memory=True,
-    )
-    model = SimCLREncoder(
-        lr=cfg.lr, temperature=cfg.temperature,
-        weight_decay=cfg.weight_decay, warmup_epochs=cfg.warmup_epochs,
-    )
-    ckpt_cb = ModelCheckpoint(
-        monitor="val_loss", dirpath=cfg.checkpoint_dir,
-        filename="simclr-{epoch:02d}-{val_loss:.3f}",
-        save_top_k=1, mode="min", save_last=True,
-    )
-    trainer = pl.Trainer(
-        max_epochs=cfg.max_epochs, accelerator="gpu", devices=1,
-        precision=cfg.precision, log_every_n_steps=1,
-        callbacks=[
-            ckpt_cb,
-            EarlyStopping("val_loss", patience=cfg.patience, mode="min"),
-            LearningRateMonitor("epoch"),
-        ],
-    )
-    trainer.fit(model, train_loader, val_loader)
-    print(f"Best SimCLR checkpoint: {ckpt_cb.best_model_path}")
-    return ckpt_cb.best_model_path
+def train(cfg: Config = None):
+    if cfg is None:
+        cfg = Config()
 
-
-def train_supcon(cfg: SupConConfig, simclr_ckpt: str = None, hf_token: str = None):
-    token = hf_token or os.environ.get("HF_TOKEN")
+    token = cfg.hf_token or os.environ.get("HF_TOKEN")
     ds = load_dataset(cfg.hf_dataset, token=token)
 
     all_routes = list(set(ds["train"]["label"]))
     random.seed(42)
-    test_routes = set(random.sample(all_routes, max(1, int(len(all_routes) * cfg.test_split))))
+    n_test = max(1, int(len(all_routes) * cfg.test_split))
+    test_routes = set(random.sample(all_routes, n_test))
     train_split = ds["train"].filter(lambda x: x["label"] not in test_routes)
     test_split  = ds["train"].filter(lambda x: x["label"] in test_routes)
 
-    print(f"SupCon train: {len(train_split)} images | val: {len(test_split)} images")
+    print(f"Routes — train: {len(all_routes) - n_test}  val: {n_test}")
+    print(f"Images — train: {len(train_split)}  val: {len(test_split)}")
 
+    # Sampler divides by n_views because each sample expands to n_views GPU images
+    samples_per_batch = max(1, cfg.batch_size // cfg.n_views)
     train_loader = DataLoader(
         SupConDataset(train_split, n_views=cfg.n_views),
-        batch_sampler=MultiRouteBatchSampler(group_by_label(train_split), cfg.batch_size),
+        batch_sampler=MultiRouteBatchSampler(group_by_label(train_split), samples_per_batch),
         collate_fn=supcon_collate, num_workers=cfg.num_workers, pin_memory=True,
     )
     val_loader = DataLoader(
         SupConDataset(test_split, n_views=cfg.n_views),
-        batch_sampler=MultiRouteBatchSampler(group_by_label(test_split), cfg.batch_size, shuffle=False),
+        batch_sampler=MultiRouteBatchSampler(group_by_label(test_split), samples_per_batch, shuffle=False),
         collate_fn=supcon_collate, num_workers=cfg.num_workers, pin_memory=True,
     )
 
-    ckpt_path = simclr_ckpt or cfg.simclr_ckpt
-    if ckpt_path:
-        backbone = SimCLREncoder.load_from_checkpoint(ckpt_path).backbone
-        print(f"Loaded SimCLR backbone from {ckpt_path}")
-    else:
-        backbone = timm.create_model("resnet50", pretrained=True, num_classes=0)
-        print("No SimCLR checkpoint — using ImageNet-pretrained backbone")
-
-    model = SupConModel(
-        backbone=backbone, lr=cfg.lr, temperature=cfg.temperature,
-        weight_decay=cfg.weight_decay, num_unfrozen_blocks=cfg.num_unfrozen_blocks,
-        warmup_epochs=cfg.warmup_epochs,
+    model = RouteFinderModel(
+        embed_dim=cfg.embed_dim, proj_dim=cfg.proj_dim, lr=cfg.lr,
+        temperature=cfg.temperature, weight_decay=cfg.weight_decay,
+        warmup_epochs=cfg.warmup_epochs, num_unfrozen_blocks=cfg.num_unfrozen_blocks,
+        backbone_name=cfg.backbone,
     )
+
     ckpt_cb = ModelCheckpoint(
-        monitor="supcon_val_loss", dirpath=cfg.checkpoint_dir,
-        filename="supcon-{epoch:02d}-{supcon_val_loss:.3f}",
+        monitor="val_loss", dirpath=cfg.checkpoint_dir,
+        filename="routefinder-{epoch:02d}-{val_loss:.3f}",
         save_top_k=1, mode="min", save_last=True,
     )
     trainer = pl.Trainer(
@@ -421,13 +355,13 @@ def train_supcon(cfg: SupConConfig, simclr_ckpt: str = None, hf_token: str = Non
         gradient_clip_val=cfg.gradient_clip,
         callbacks=[
             ckpt_cb,
-            EarlyStopping("supcon_val_loss", patience=cfg.patience, mode="min"),
+            EarlyStopping("val_loss", patience=cfg.patience, mode="min"),
             LearningRateMonitor("epoch"),
             RecallAtKCallback(test_split, every_n_epochs=cfg.recall_every_n_epochs),
         ],
     )
     trainer.fit(model, train_loader, val_loader)
-    print(f"Best SupCon checkpoint: {ckpt_cb.best_model_path}")
+    print(f"\nBest checkpoint: {ckpt_cb.best_model_path}")
     return ckpt_cb.best_model_path
 
 
@@ -435,16 +369,23 @@ def train_supcon(cfg: SupConConfig, simclr_ckpt: str = None, hf_token: str = Non
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--phase", choices=["simclr", "supcon", "both"], default="both",
-                        help="Which phase(s) to run")
-    parser.add_argument("--simclr_ckpt", default=None,
-                        help="Existing SimCLR checkpoint — skips phase 1 if provided with --phase supcon")
-    parser.add_argument("--hf_token", default=None,
-                        help="HuggingFace token (or set HF_TOKEN env var)")
+    parser.add_argument("--hf_token", default=None)
+    parser.add_argument("--hf_dataset", default="DeclanBracken/RouteFinderDatasetV2")
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--temperature", type=float, default=0.07)
+    parser.add_argument("--num_unfrozen_blocks", type=int, default=0)
+    parser.add_argument("--checkpoint_dir", default="checkpoints")
     args = parser.parse_args()
 
-    simclr_ckpt = args.simclr_ckpt
-    if args.phase in ("simclr", "both"):
-        simclr_ckpt = train_simclr(SimCLRConfig(), hf_token=args.hf_token)
-    if args.phase in ("supcon", "both"):
-        train_supcon(SupConConfig(), simclr_ckpt=simclr_ckpt, hf_token=args.hf_token)
+    train(Config(
+        hf_token=args.hf_token,
+        hf_dataset=args.hf_dataset,
+        lr=args.lr,
+        max_epochs=args.epochs,
+        batch_size=args.batch_size,
+        temperature=args.temperature,
+        num_unfrozen_blocks=args.num_unfrozen_blocks,
+        checkpoint_dir=args.checkpoint_dir,
+    ))
