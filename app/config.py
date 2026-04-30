@@ -12,8 +12,9 @@ class Settings(BaseSettings):
     b2_bucket_name: str
     b2_endpoint_url: str        # e.g. https://s3.us-west-004.backblazeb2.com
 
-    # Model — path to .ckpt file, or leave empty to disable search
+    # Model — local path written after download; b2 key is the source of truth
     model_checkpoint: str = ""
+    model_checkpoint_b2_key: str = ""
     model_version: str = "v1"
 
     class Config:
