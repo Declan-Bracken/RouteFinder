@@ -11,23 +11,11 @@ def search_areas(q: str = Query(..., min_length=2)):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                WITH RECURSIVE ancestors AS (
-                    SELECT id, name, parent_id, name::text AS path
-                    FROM areas
-                    UNION ALL
-                    SELECT a.id, a.name, a.parent_id, a.name || ' / ' || anc.path
-                    FROM areas a
-                    JOIN ancestors anc ON a.id = anc.parent_id
-                ),
-                full_paths AS (
-                    SELECT id, MAX(path) AS full_path
-                    FROM ancestors
-                    GROUP BY id
-                )
-                SELECT a.id, a.name, a.url, fp.full_path
+                SELECT a.id, a.name, a.url, p.name AS parent_name
                 FROM areas a
-                JOIN full_paths fp ON fp.id = a.id
+                LEFT JOIN areas p ON p.id = a.parent_id
                 WHERE a.name ILIKE %s
+                  AND EXISTS (SELECT 1 FROM routes r WHERE r.area_id = a.id)
                 ORDER BY a.name
                 LIMIT 20
                 """,
@@ -35,7 +23,15 @@ def search_areas(q: str = Query(..., min_length=2)):
             )
             rows = cur.fetchall()
 
-    return [{"id": row[0], "name": row[1], "url": row[2], "full_path": row[3]} for row in rows]
+    return [
+        {
+            "id": row[0],
+            "name": row[1],
+            "url": row[2],
+            "full_path": f"{row[3]} / {row[1]}" if row[3] else row[1],
+        }
+        for row in rows
+    ]
 
 
 @router.get("/areas/{area_id}/routes")
