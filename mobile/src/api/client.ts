@@ -1,26 +1,39 @@
 const BASE_URL = "https://routefinder-production.up.railway.app";
 
-export interface Area {
+export interface AreaResult {
   id: number;
   name: string;
-  url: string;
   full_path: string;
+  route_count: number;
 }
 
-export interface Route {
+export interface RouteResult {
+  id: number;
+  name: string;
+  grade: string;
+  area: string;
+}
+
+export interface SearchResults {
+  areas: AreaResult[];
+  routes: RouteResult[];
+}
+
+export interface RouteDetail {
   id: number;
   name: string;
   grade: string;
   url: string;
+  area: string;
 }
 
-export async function searchAreas(q: string): Promise<Area[]> {
-  const res = await fetch(`${BASE_URL}/areas/search?q=${encodeURIComponent(q)}`);
-  if (!res.ok) throw new Error("Area search failed");
+export async function unifiedSearch(q: string): Promise<SearchResults> {
+  const res = await fetch(`${BASE_URL}/search?q=${encodeURIComponent(q)}`);
+  if (!res.ok) throw new Error("Search failed");
   return res.json();
 }
 
-export async function getRoutes(areaId: number): Promise<Route[]> {
+export async function getRoutes(areaId: number): Promise<RouteDetail[]> {
   const res = await fetch(`${BASE_URL}/areas/${areaId}/routes`);
   if (!res.ok) throw new Error("Failed to fetch routes");
   return res.json();
