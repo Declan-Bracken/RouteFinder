@@ -40,7 +40,7 @@ def search(
                     r.url,
                     a.name          AS area_name,
                     1 - (e.embedding <=> %s::vector) AS similarity
-                FROM embeddings e
+                FROM image_embeddings e
                 JOIN images  i ON i.id       = e.image_id
                 JOIN routes  r ON r.id       = i.route_id
                 JOIN areas   a ON a.id       = r.area_id
