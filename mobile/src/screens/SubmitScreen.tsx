@@ -11,6 +11,7 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
+  useWindowDimensions,
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import {
@@ -26,6 +27,7 @@ import {
 type Step = "search" | "routes" | "photo" | "submitting" | "done";
 
 export default function SubmitScreen() {
+  const { height } = useWindowDimensions();
   const [step, setStep] = useState<Step>("search");
 
   const [query, setQuery] = useState("");
@@ -174,7 +176,7 @@ export default function SubmitScreen() {
         {routesLoading ? (
           <ActivityIndicator style={{ marginTop: 24 }} />
         ) : (
-          <ScrollView style={styles.fill} contentContainerStyle={styles.routeListContent}>
+          <ScrollView style={{ height: height - 130 }} contentContainerStyle={styles.routeListContent}>
             {routes.map((r) => (
               <TouchableOpacity key={r.id} style={styles.routeItem} onPress={() => selectRoute(r)}>
                 <View style={{ flex: 1 }}>
