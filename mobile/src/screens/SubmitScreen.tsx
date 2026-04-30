@@ -176,6 +176,7 @@ export default function SubmitScreen() {
           <ActivityIndicator style={{ marginTop: 24 }} />
         ) : (
           <FlatList
+            style={styles.fill}
             data={routes}
             keyExtractor={(r) => String(r.id)}
             contentContainerStyle={styles.routeListContent}
@@ -251,11 +252,7 @@ export default function SubmitScreen() {
       style={styles.fill}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
-      <ScrollView
-        style={styles.fill}
-        contentContainerStyle={styles.container}
-        keyboardShouldPersistTaps="handled"
-      >
+      <View style={styles.container}>
         <Text style={styles.heading}>Submit a route photo</Text>
         <Text style={styles.label}>Search area or route</Text>
         <TextInput
@@ -269,7 +266,11 @@ export default function SubmitScreen() {
         {searchLoading && <ActivityIndicator style={{ marginTop: 8 }} />}
 
         {sections.length > 0 && (
-          <View style={styles.dropdown}>
+          <ScrollView
+            style={styles.dropdown}
+            keyboardShouldPersistTaps="handled"
+            nestedScrollEnabled
+          >
             {sections.map((section) => (
               <View key={section.title}>
                 <Text style={styles.sectionHeader}>{section.title}</Text>
@@ -301,9 +302,9 @@ export default function SubmitScreen() {
                 )}
               </View>
             ))}
-          </View>
+          </ScrollView>
         )}
-      </ScrollView>
+      </View>
     </KeyboardAvoidingView>
   );
 }
@@ -370,7 +371,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     backgroundColor: "#fff",
     marginTop: 4,
-    overflow: "hidden",
+    maxHeight: 420,
   },
   sectionHeader: {
     fontSize: 11,
