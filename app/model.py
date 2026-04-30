@@ -6,7 +6,6 @@ all subsequent requests — loading DINOv2 on every request would be too slow.
 """
 import os
 import sys
-import torch
 from PIL import Image
 
 _model = None
@@ -30,6 +29,7 @@ def _load():
 
     from train import RouteFinderModel, EVAL_TRANSFORM
 
+    import torch
     _device = "cuda" if torch.cuda.is_available() else "cpu"
     _model = RouteFinderModel.load_from_checkpoint(ckpt, map_location=_device).eval()
     _transform = EVAL_TRANSFORM
@@ -38,6 +38,7 @@ def _load():
 def embed_image(image: Image.Image) -> list[float]:
     if _model is None:
         _load()
+    import torch
     tensor = _transform(image.convert("RGB")).unsqueeze(0).to(_device)
     with torch.no_grad():
         return _model(tensor).squeeze(0).cpu().tolist()
