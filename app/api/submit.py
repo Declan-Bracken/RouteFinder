@@ -10,7 +10,7 @@ from ..storage import upload
 router = APIRouter()
 
 MAX_BYTES = 10 * 1024 * 1024  # 10 MB
-MAX_DIMENSION = 1920
+MAX_DIMENSION = 1024
 ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
 
 
