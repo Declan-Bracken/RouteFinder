@@ -9,7 +9,6 @@ import {
   Alert,
   StyleSheet,
   ScrollView,
-  FlatList,
   KeyboardAvoidingView,
   Platform,
 } from "react-native";
@@ -175,21 +174,17 @@ export default function SubmitScreen() {
         {routesLoading ? (
           <ActivityIndicator style={{ marginTop: 24 }} />
         ) : (
-          <FlatList
-            style={styles.fill}
-            data={routes}
-            keyExtractor={(r) => String(r.id)}
-            contentContainerStyle={styles.routeListContent}
-            renderItem={({ item: r }) => (
-              <TouchableOpacity style={styles.routeItem} onPress={() => selectRoute(r)}>
+          <ScrollView style={styles.fill} contentContainerStyle={styles.routeListContent}>
+            {routes.map((r) => (
+              <TouchableOpacity key={r.id} style={styles.routeItem} onPress={() => selectRoute(r)}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.routeName}>{r.name}</Text>
                   <Text style={styles.routeArea}>{r.area}</Text>
                 </View>
                 <Text style={styles.routeGrade}>{r.grade}</Text>
               </TouchableOpacity>
-            )}
-          />
+            ))}
+          </ScrollView>
         )}
       </View>
     );
