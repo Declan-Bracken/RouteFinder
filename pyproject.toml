@@ -25,7 +25,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-app = ["fastapi", "uvicorn", "python-multipart", "pgvector"]
+app = ["fastapi", "uvicorn[standard]", "python-multipart", "pgvector", "boto3", "pydantic-settings"]
 dev = ["streamlit", "matplotlib", "seaborn", "ipykernel"]
 
 [tool.setuptools.packages.find]
