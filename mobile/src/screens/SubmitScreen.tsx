@@ -9,9 +9,9 @@ import {
   Alert,
   StyleSheet,
   ScrollView,
+  FlatList,
   KeyboardAvoidingView,
   Platform,
-  SectionList,
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import {
@@ -44,12 +44,10 @@ export default function SubmitScreen() {
   const handleQueryChange = useCallback((text: string) => {
     setQuery(text);
     if (debounceRef.current) clearTimeout(debounceRef.current);
-
     if (text.length < 2) {
       setSearchResults(null);
       return;
     }
-
     debounceRef.current = setTimeout(async () => {
       setSearchLoading(true);
       try {
@@ -85,6 +83,23 @@ export default function SubmitScreen() {
     setStep("photo");
   }, []);
 
+  // Go back to route list preserving area + routes state
+  const backToRoutes = useCallback(() => {
+    setSelectedRoute(null);
+    setImageUri(null);
+    setStep("routes");
+  }, []);
+
+  const resetAll = useCallback(() => {
+    setStep("search");
+    setQuery("");
+    setSearchResults(null);
+    setSelectedArea(null);
+    setRoutes([]);
+    setSelectedRoute(null);
+    setImageUri(null);
+  }, []);
+
   const pickImage = useCallback(async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
@@ -115,25 +130,7 @@ export default function SubmitScreen() {
     }
   }, [imageUri, selectedRoute]);
 
-  const reset = useCallback(() => {
-    setStep("search");
-    setQuery("");
-    setSearchResults(null);
-    setSelectedArea(null);
-    setRoutes([]);
-    setSelectedRoute(null);
-    setImageUri(null);
-  }, []);
-
-  // Build SectionList sections from search results
-  const sections = [];
-  if (searchResults?.areas?.length) {
-    sections.push({ title: "Areas", data: searchResults.areas, type: "area" as const });
-  }
-  if (searchResults?.routes?.length) {
-    sections.push({ title: "Routes", data: searchResults.routes, type: "route" as const });
-  }
-
+  // ── Submitting ──────────────────────────────────────────────────────────────
   if (step === "submitting") {
     return (
       <View style={styles.centered}>
@@ -143,6 +140,7 @@ export default function SubmitScreen() {
     );
   }
 
+  // ── Done ────────────────────────────────────────────────────────────────────
   if (step === "done") {
     return (
       <View style={styles.centered}>
@@ -152,155 +150,158 @@ export default function SubmitScreen() {
           {selectedRoute?.name}
           {selectedRoute?.grade ? ` · ${selectedRoute.grade}` : ""}
         </Text>
-        <TouchableOpacity style={styles.primaryButton} onPress={reset}>
+        <TouchableOpacity style={styles.primaryButton} onPress={resetAll}>
           <Text style={styles.primaryButtonText}>Submit another</Text>
         </TouchableOpacity>
       </View>
     );
   }
 
+  // ── Routes step (FlatList for proper scrolling) ─────────────────────────────
+  if (step === "routes") {
+    return (
+      <View style={styles.fill}>
+        <View style={styles.routesHeader}>
+          <Text style={styles.label}>Area</Text>
+          <View style={styles.searchRow}>
+            <Text style={styles.frozenQuery} numberOfLines={1}>{query}</Text>
+            <TouchableOpacity onPress={resetAll} style={styles.clearButton}>
+              <Text style={styles.clearButtonText}>✕</Text>
+            </TouchableOpacity>
+          </View>
+          <Text style={[styles.label, { marginTop: 16 }]}>Route</Text>
+        </View>
+
+        {routesLoading ? (
+          <ActivityIndicator style={{ marginTop: 24 }} />
+        ) : (
+          <FlatList
+            data={routes}
+            keyExtractor={(r) => String(r.id)}
+            contentContainerStyle={styles.routeListContent}
+            renderItem={({ item: r }) => (
+              <TouchableOpacity style={styles.routeItem} onPress={() => selectRoute(r)}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.routeName}>{r.name}</Text>
+                  <Text style={styles.routeArea}>{r.area}</Text>
+                </View>
+                <Text style={styles.routeGrade}>{r.grade}</Text>
+              </TouchableOpacity>
+            )}
+          />
+        )}
+      </View>
+    );
+  }
+
+  // ── Photo step ──────────────────────────────────────────────────────────────
+  if (step === "photo" && selectedRoute) {
+    return (
+      <KeyboardAvoidingView
+        style={styles.fill}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
+        <ScrollView contentContainerStyle={styles.container}>
+          <Text style={styles.heading}>Submit a route photo</Text>
+
+          <View style={styles.selectedRouteCard}>
+            <Text style={styles.selectedRouteName}>{selectedRoute.name}</Text>
+            <Text style={styles.selectedRouteMeta}>
+              {selectedRoute.grade ? `${selectedRoute.grade} · ` : ""}
+              {"area" in selectedRoute ? selectedRoute.area : ""}
+            </Text>
+          </View>
+          <TouchableOpacity onPress={backToRoutes} style={styles.changeLink}>
+            <Text style={styles.changeLinkText}>← Change route</Text>
+          </TouchableOpacity>
+
+          <Text style={styles.label}>Photo</Text>
+          <View style={styles.photoButtons}>
+            <TouchableOpacity style={styles.secondaryButton} onPress={takePhoto}>
+              <Text style={styles.secondaryButtonText}>Take photo</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.secondaryButton} onPress={pickImage}>
+              <Text style={styles.secondaryButtonText}>Choose from library</Text>
+            </TouchableOpacity>
+          </View>
+          {imageUri && (
+            <>
+              <Image source={{ uri: imageUri }} style={styles.preview} resizeMode="cover" />
+              <TouchableOpacity style={styles.primaryButton} onPress={handleSubmit}>
+                <Text style={styles.primaryButtonText}>Submit</Text>
+              </TouchableOpacity>
+            </>
+          )}
+        </ScrollView>
+      </KeyboardAvoidingView>
+    );
+  }
+
+  // ── Search step ─────────────────────────────────────────────────────────────
+  const sections: { title: string; data: (AreaResult | RouteResult)[]; type: "area" | "route" }[] = [];
+  if (searchResults?.areas?.length) {
+    sections.push({ title: "Areas", data: searchResults.areas, type: "area" });
+  }
+  if (searchResults?.routes?.length) {
+    sections.push({ title: "Routes", data: searchResults.routes, type: "route" });
+  }
+
   return (
     <KeyboardAvoidingView
-      style={{ flex: 1 }}
+      style={styles.fill}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
       <ScrollView
+        style={styles.fill}
         contentContainerStyle={styles.container}
         keyboardShouldPersistTaps="handled"
       >
         <Text style={styles.heading}>Submit a route photo</Text>
+        <Text style={styles.label}>Search area or route</Text>
+        <TextInput
+          style={styles.input}
+          placeholder="e.g. Mount Nemo, Lop Sided…"
+          value={query}
+          onChangeText={handleQueryChange}
+          autoCorrect={false}
+        />
 
-        {/* Search box — always visible until photo step */}
-        {step !== "photo" && (
-          <>
-            <Text style={styles.label}>
-              {step === "routes" ? "Area" : "Search area or route"}
-            </Text>
-            <View style={styles.searchRow}>
-              <TextInput
-                style={[styles.input, { flex: 1 }]}
-                placeholder="e.g. Mount Nemo, Lop Sided…"
-                value={query}
-                onChangeText={handleQueryChange}
-                autoCorrect={false}
-                editable={step === "search"}
-              />
-              {step === "routes" && (
-                <TouchableOpacity style={styles.clearButton} onPress={reset}>
-                  <Text style={styles.clearButtonText}>✕</Text>
-                </TouchableOpacity>
-              )}
-            </View>
-          </>
-        )}
+        {searchLoading && <ActivityIndicator style={{ marginTop: 8 }} />}
 
-        {/* Search results dropdown */}
-        {step === "search" && (
-          <>
-            {searchLoading && <ActivityIndicator style={{ marginTop: 8 }} />}
-            {sections.length > 0 && (
-              <View style={styles.dropdown}>
-                {sections.map((section) => (
-                  <View key={section.title}>
-                    <Text style={styles.sectionHeader}>{section.title}</Text>
-                    {section.data.map((item) =>
-                      section.type === "area" ? (
-                        <TouchableOpacity
-                          key={(item as AreaResult).id}
-                          style={styles.dropdownItem}
-                          onPress={() => selectArea(item as AreaResult)}
-                        >
-                          <Text style={styles.dropdownPrimary}>
-                            {(item as AreaResult).full_path}
-                          </Text>
-                          <Text style={styles.dropdownMeta}>
-                            {(item as AreaResult).route_count} routes
-                          </Text>
-                        </TouchableOpacity>
-                      ) : (
-                        <TouchableOpacity
-                          key={(item as RouteResult).id}
-                          style={styles.dropdownItem}
-                          onPress={() => selectRoute(item as RouteResult)}
-                        >
-                          <Text style={styles.dropdownPrimary}>{(item as RouteResult).name}</Text>
-                          <Text style={styles.dropdownMeta}>
-                            {(item as RouteResult).grade
-                              ? `${(item as RouteResult).grade} · `
-                              : ""}
-                            {(item as RouteResult).area}
-                          </Text>
-                        </TouchableOpacity>
-                      )
-                    )}
-                  </View>
-                ))}
+        {sections.length > 0 && (
+          <View style={styles.dropdown}>
+            {sections.map((section) => (
+              <View key={section.title}>
+                <Text style={styles.sectionHeader}>{section.title}</Text>
+                {section.data.map((item) =>
+                  section.type === "area" ? (
+                    <TouchableOpacity
+                      key={(item as AreaResult).id}
+                      style={styles.dropdownItem}
+                      onPress={() => selectArea(item as AreaResult)}
+                    >
+                      <Text style={styles.dropdownPrimary}>{(item as AreaResult).full_path}</Text>
+                      <Text style={styles.dropdownMeta}>
+                        {(item as AreaResult).route_count} routes
+                      </Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <TouchableOpacity
+                      key={(item as RouteResult).id}
+                      style={styles.dropdownItem}
+                      onPress={() => selectRoute(item as RouteResult)}
+                    >
+                      <Text style={styles.dropdownPrimary}>{(item as RouteResult).name}</Text>
+                      <Text style={styles.dropdownMeta}>
+                        {(item as RouteResult).grade ? `${(item as RouteResult).grade} · ` : ""}
+                        {(item as RouteResult).area}
+                      </Text>
+                    </TouchableOpacity>
+                  )
+                )}
               </View>
-            )}
-          </>
-        )}
-
-        {/* Route list after area selection */}
-        {step === "routes" && (
-          <>
-            <Text style={styles.label}>Route</Text>
-            {routesLoading ? (
-              <ActivityIndicator style={{ marginTop: 8 }} />
-            ) : (
-              <View style={styles.routeList}>
-                {routes.map((r) => (
-                  <TouchableOpacity
-                    key={r.id}
-                    style={styles.routeItem}
-                    onPress={() => selectRoute(r)}
-                  >
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.routeName}>{r.name}</Text>
-                      <Text style={styles.routeArea}>{r.area}</Text>
-                    </View>
-                    <Text style={styles.routeGrade}>{r.grade}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            )}
-          </>
-        )}
-
-        {/* Photo step */}
-        {step === "photo" && selectedRoute && (
-          <>
-            <Text style={styles.heading}>Submit a route photo</Text>
-            <View style={styles.selectedRoute}>
-              <Text style={styles.selectedRouteName}>{selectedRoute.name}</Text>
-              <Text style={styles.selectedRouteMeta}>
-                {selectedRoute.grade
-                  ? `${selectedRoute.grade} · `
-                  : ""}
-                {"area" in selectedRoute ? selectedRoute.area : ""}
-              </Text>
-            </View>
-            <TouchableOpacity style={styles.changeLink} onPress={reset}>
-              <Text style={styles.changeLinkText}>Change route</Text>
-            </TouchableOpacity>
-
-            <Text style={styles.label}>Photo</Text>
-            <View style={styles.photoButtons}>
-              <TouchableOpacity style={styles.secondaryButton} onPress={takePhoto}>
-                <Text style={styles.secondaryButtonText}>Take photo</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.secondaryButton} onPress={pickImage}>
-                <Text style={styles.secondaryButtonText}>Choose from library</Text>
-              </TouchableOpacity>
-            </View>
-            {imageUri && (
-              <>
-                <Image source={{ uri: imageUri }} style={styles.preview} resizeMode="cover" />
-                <TouchableOpacity style={styles.primaryButton} onPress={handleSubmit}>
-                  <Text style={styles.primaryButtonText}>Submit</Text>
-                </TouchableOpacity>
-              </>
-            )}
-          </>
+            ))}
+          </View>
         )}
       </ScrollView>
     </KeyboardAvoidingView>
@@ -308,6 +309,10 @@ export default function SubmitScreen() {
 }
 
 const styles = StyleSheet.create({
+  fill: {
+    flex: 1,
+    backgroundColor: "#fff",
+  },
   container: {
     padding: 20,
     paddingBottom: 48,
@@ -317,6 +322,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     gap: 16,
+    backgroundColor: "#fff",
   },
   heading: {
     fontSize: 22,
@@ -331,12 +337,24 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     letterSpacing: 0.5,
     marginBottom: 6,
-    marginTop: 16,
   },
   searchRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
+  },
+  frozenQuery: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: "500",
+    paddingVertical: 4,
+  },
+  clearButton: {
+    padding: 8,
+  },
+  clearButtonText: {
+    fontSize: 16,
+    color: "#9ca3af",
   },
   input: {
     borderWidth: 1,
@@ -345,13 +363,6 @@ const styles = StyleSheet.create({
     padding: 12,
     fontSize: 16,
     backgroundColor: "#fff",
-  },
-  clearButton: {
-    padding: 10,
-  },
-  clearButtonText: {
-    fontSize: 16,
-    color: "#9ca3af",
   },
   dropdown: {
     borderWidth: 1,
@@ -385,7 +396,17 @@ const styles = StyleSheet.create({
     color: "#6b7280",
     marginTop: 2,
   },
-  routeList: {
+  // Routes step
+  routesHeader: {
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 8,
+    backgroundColor: "#fff",
+    borderBottomWidth: 1,
+    borderBottomColor: "#f3f4f6",
+  },
+  routeListContent: {
+    padding: 16,
     gap: 6,
   },
   routeItem: {
@@ -397,6 +418,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#d1d5db",
     backgroundColor: "#fff",
+    marginBottom: 6,
   },
   routeName: {
     fontSize: 15,
@@ -413,7 +435,8 @@ const styles = StyleSheet.create({
     color: "#6b7280",
     marginLeft: 8,
   },
-  selectedRoute: {
+  // Photo step
+  selectedRouteCard: {
     padding: 14,
     borderRadius: 10,
     backgroundColor: "#eff6ff",
@@ -431,7 +454,8 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   changeLink: {
-    marginBottom: 8,
+    marginBottom: 16,
+    marginTop: 4,
   },
   changeLinkText: {
     color: "#2563eb",
