@@ -18,13 +18,16 @@ On Kaggle:
 import os
 import random
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections import defaultdict
+from pathlib import Path
 
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader, BatchSampler
+from PIL import Image
 import torchvision.transforms as T
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
@@ -64,6 +67,12 @@ class Config:
     # Eval
     recall_every_n_epochs: int = 1  # every epoch — val set is small so overhead is negligible
     test_split: float = 0.2         # fraction of routes held out for validation
+
+    # Local image directory (set when training from B2-downloaded images)
+    # If set, image_dir + manifest_path are used instead of hf_dataset
+    image_dir: str = ""
+    manifest_path: str = ""           # CSV with image_id, route_id, area_id, b2_key, label
+    use_area_sampler: bool = True     # area-aware hard negative sampling
 
     # I/O
     num_workers: int = 4
@@ -169,6 +178,84 @@ class MultiRouteBatchSampler(BatchSampler):
     def __len__(self):
         total = sum(len(g) for g in self.groups)
         return max(1, (total + self.max_batch_size - 1) // self.max_batch_size)
+
+
+class AreaAwareBatchSampler(BatchSampler):
+    """
+    Hard negative sampler: packs routes from the same area into each batch.
+    Routes from the same crag share rock type, color, and vegetation — forcing
+    the model to learn fine-grained discriminative features rather than easy
+    cross-crag differences.
+    """
+    def __init__(self, area_route_groups: dict, max_batch_size: int, shuffle: bool = True):
+        # area_route_groups: {area_id: [[indices_route1], [indices_route2], ...]}
+        self.area_route_groups = area_route_groups
+        self.max_batch_size = max_batch_size
+        self.shuffle = shuffle
+
+    def __iter__(self):
+        areas = list(self.area_route_groups.values())
+        if self.shuffle:
+            random.shuffle(areas)
+        for route_groups in areas:
+            groups = list(route_groups)
+            if self.shuffle:
+                random.shuffle(groups)
+            batch, batch_len = [], 0
+            for group in groups:
+                if batch_len + len(group) > self.max_batch_size and batch:
+                    yield batch
+                    batch, batch_len = [], 0
+                batch.extend(group)
+                batch_len += len(group)
+            if batch:
+                yield batch
+
+    def __len__(self):
+        total = sum(sum(len(g) for g in groups) for groups in self.area_route_groups.values())
+        return max(1, (total + self.max_batch_size - 1) // self.max_batch_size)
+
+
+class LocalImageDataset(Dataset):
+    """Dataset that reads images from a local directory using a manifest DataFrame."""
+    def __init__(self, manifest: pd.DataFrame, image_dir: str, n_views: int = 2):
+        self.manifest = manifest.reset_index(drop=True)
+        self.image_dir = image_dir
+        self.n_views = n_views
+
+    def __len__(self):
+        return len(self.manifest)
+
+    def __getitem__(self, idx):
+        row = self.manifest.iloc[idx]
+        img = Image.open(os.path.join(self.image_dir, f"{row['image_id']}.jpg")).convert("RGB")
+        views = torch.stack([TRAIN_TRANSFORM(img) for _ in range(self.n_views)])
+        return views, torch.tensor(int(row["label"]), dtype=torch.long)
+
+
+class LocalEvalDataset(Dataset):
+    def __init__(self, manifest: pd.DataFrame, image_dir: str):
+        self.manifest = manifest.reset_index(drop=True)
+        self.image_dir = image_dir
+
+    def __len__(self):
+        return len(self.manifest)
+
+    def __getitem__(self, idx):
+        row = self.manifest.iloc[idx]
+        img = Image.open(os.path.join(self.image_dir, f"{row['image_id']}.jpg")).convert("RGB")
+        return EVAL_TRANSFORM(img), int(row["label"])
+
+
+def group_by_area_and_route(manifest: pd.DataFrame) -> dict:
+    """Returns {area_id: [[indices_route1], [indices_route2], ...]} for AreaAwareBatchSampler."""
+    area_route = defaultdict(lambda: defaultdict(list))
+    for idx, row in manifest.iterrows():
+        area_route[row["area_id"]][row["route_id"]].append(idx)
+    return {
+        area_id: list(route_dict.values())
+        for area_id, route_dict in area_route.items()
+    }
 
 
 def supcon_collate(batch):
@@ -307,35 +394,86 @@ class RecallAtKCallback(pl.Callback):
 
 # ── Training ──────────────────────────────────────────────────────────────────
 
+def _group_by_label_df(df: pd.DataFrame) -> list:
+    """group_by_label equivalent for manifest DataFrames."""
+    groups = defaultdict(list)
+    for i, row in df.iterrows():
+        groups[int(row["label"])].append(i)
+    return list(groups.values())
+
+
+def _build_loaders(cfg: Config):
+    """Returns (train_loader, val_loader, val_eval_ds)."""
+    samples_per_batch = max(1, cfg.batch_size // cfg.n_views)
+
+    if cfg.image_dir and cfg.manifest_path:
+        manifest = pd.read_csv(cfg.manifest_path)
+        all_routes = manifest["route_id"].unique().tolist()
+        random.seed(42)
+        n_test = max(1, int(len(all_routes) * cfg.test_split))
+        test_routes = set(random.sample(all_routes, n_test))
+
+        train_df = manifest[~manifest["route_id"].isin(test_routes)].reset_index(drop=True)
+        val_df   = manifest[manifest["route_id"].isin(test_routes)].reset_index(drop=True)
+
+        print(f"Routes — train: {len(all_routes) - n_test}  val: {n_test}")
+        print(f"Images — train: {len(train_df)}  val: {len(val_df)}")
+
+        train_sampler = (
+            AreaAwareBatchSampler(group_by_area_and_route(train_df), samples_per_batch)
+            if cfg.use_area_sampler
+            else MultiRouteBatchSampler(_group_by_label_df(train_df), samples_per_batch)
+        )
+        train_loader = DataLoader(
+            LocalImageDataset(train_df, cfg.image_dir, n_views=cfg.n_views),
+            batch_sampler=train_sampler,
+            collate_fn=supcon_collate, num_workers=cfg.num_workers, pin_memory=True,
+        )
+        val_loader = DataLoader(
+            LocalImageDataset(val_df, cfg.image_dir, n_views=cfg.n_views),
+            batch_sampler=MultiRouteBatchSampler(
+                _group_by_label_df(val_df), samples_per_batch, shuffle=False
+            ),
+            collate_fn=supcon_collate, num_workers=cfg.num_workers, pin_memory=True,
+        )
+        val_eval_ds = LocalEvalDataset(val_df, cfg.image_dir)
+
+    else:
+        token = cfg.hf_token or os.environ.get("HF_TOKEN")
+        ds = load_dataset(cfg.hf_dataset, token=token)
+
+        all_routes = list(set(ds["train"]["label"]))
+        random.seed(42)
+        n_test = max(1, int(len(all_routes) * cfg.test_split))
+        test_routes = set(random.sample(all_routes, n_test))
+        train_split = ds["train"].filter(lambda x: x["label"] not in test_routes)
+        val_split   = ds["train"].filter(lambda x: x["label"] in test_routes)
+
+        print(f"Routes — train: {len(all_routes) - n_test}  val: {n_test}")
+        print(f"Images — train: {len(train_split)}  val: {len(val_split)}")
+
+        train_loader = DataLoader(
+            SupConDataset(train_split, n_views=cfg.n_views),
+            batch_sampler=MultiRouteBatchSampler(group_by_label(train_split), samples_per_batch),
+            collate_fn=supcon_collate, num_workers=cfg.num_workers, pin_memory=True,
+        )
+        val_loader = DataLoader(
+            SupConDataset(val_split, n_views=cfg.n_views),
+            batch_sampler=MultiRouteBatchSampler(
+                group_by_label(val_split), samples_per_batch, shuffle=False
+            ),
+            collate_fn=supcon_collate, num_workers=cfg.num_workers, pin_memory=True,
+        )
+        val_eval_ds = EvalDataset(val_split)
+
+    return train_loader, val_loader, val_eval_ds
+
+
 def train(cfg: Config = None):
     if cfg is None:
         cfg = Config()
 
-    token = cfg.hf_token or os.environ.get("HF_TOKEN")
-    ds = load_dataset(cfg.hf_dataset, token=token)
-
-    all_routes = list(set(ds["train"]["label"]))
-    random.seed(42)
-    n_test = max(1, int(len(all_routes) * cfg.test_split))
-    test_routes = set(random.sample(all_routes, n_test))
-    train_split = ds["train"].filter(lambda x: x["label"] not in test_routes)
-    test_split  = ds["train"].filter(lambda x: x["label"] in test_routes)
-
-    print(f"Routes — train: {len(all_routes) - n_test}  val: {n_test}")
-    print(f"Images — train: {len(train_split)}  val: {len(test_split)}")
-
-    # Sampler divides by n_views because each sample expands to n_views GPU images
-    samples_per_batch = max(1, cfg.batch_size // cfg.n_views)
-    train_loader = DataLoader(
-        SupConDataset(train_split, n_views=cfg.n_views),
-        batch_sampler=MultiRouteBatchSampler(group_by_label(train_split), samples_per_batch),
-        collate_fn=supcon_collate, num_workers=cfg.num_workers, pin_memory=True,
-    )
-    val_loader = DataLoader(
-        SupConDataset(test_split, n_views=cfg.n_views),
-        batch_sampler=MultiRouteBatchSampler(group_by_label(test_split), samples_per_batch, shuffle=False),
-        collate_fn=supcon_collate, num_workers=cfg.num_workers, pin_memory=True,
-    )
+    train_loader, val_loader, val_eval_ds = _build_loaders(cfg)
 
     model = RouteFinderModel(
         embed_dim=cfg.embed_dim, proj_dim=cfg.proj_dim, lr=cfg.lr,
@@ -358,7 +496,7 @@ def train(cfg: Config = None):
         callbacks=[
             ckpt_cb,
             LearningRateMonitor("epoch"),
-            RecallAtKCallback(test_split, every_n_epochs=cfg.recall_every_n_epochs),
+            RecallAtKCallback(val_eval_ds, every_n_epochs=cfg.recall_every_n_epochs),
             EarlyStopping("val_recall@1", patience=cfg.patience, mode="max", strict=False),
         ],
     )
