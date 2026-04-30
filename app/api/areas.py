@@ -11,7 +11,6 @@ def _fmt(slug: str) -> str:
 
 @router.get("/areas/search")
 def search_areas(q: str = Query(..., min_length=2)):
-    # normalize query so "the turtle" matches "the-turtle"
     q_slug = q.strip().replace(" ", "-")
     pattern = f"%{q_slug}%"
 
@@ -19,12 +18,25 @@ def search_areas(q: str = Query(..., min_length=2)):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT a.id, a.name, a.url, p.name AS parent_name
+                WITH RECURSIVE matching AS (
+                    SELECT id FROM areas WHERE name ILIKE %s
+                ),
+                descendants AS (
+                    SELECT id, 0 AS depth FROM matching
+                    UNION ALL
+                    SELECT a.id, d.depth + 1
+                    FROM areas a
+                    JOIN descendants d ON a.parent_id = d.id
+                    WHERE d.depth < 8
+                )
+                SELECT DISTINCT
+                    a.id, a.name, a.url, p.name AS parent_name,
+                    CASE WHEN a.name ILIKE %s THEN 0 ELSE 1 END AS rank
                 FROM areas a
                 LEFT JOIN areas p ON p.id = a.parent_id
-                WHERE (a.name ILIKE %s OR p.name ILIKE %s)
+                WHERE a.id IN (SELECT id FROM descendants)
                   AND EXISTS (SELECT 1 FROM routes r WHERE r.area_id = a.id)
-                ORDER BY a.name
+                ORDER BY rank, a.name
                 LIMIT 20
                 """,
                 (pattern, pattern),

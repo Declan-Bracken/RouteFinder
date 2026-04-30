@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useRef } from "react";
 import {
   View,
   Text,
@@ -25,6 +25,7 @@ export default function SubmitScreen() {
   const [areaSuggestions, setAreaSuggestions] = useState<Area[]>([]);
   const [selectedArea, setSelectedArea] = useState<Area | null>(null);
   const [areaLoading, setAreaLoading] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [routes, setRoutes] = useState<Route[]>([]);
   const [selectedRoute, setSelectedRoute] = useState<Route | null>(null);
@@ -32,22 +33,28 @@ export default function SubmitScreen() {
 
   const [imageUri, setImageUri] = useState<string | null>(null);
 
-  const handleAreaChange = useCallback(async (text: string) => {
+  const handleAreaChange = useCallback((text: string) => {
     setAreaQuery(text);
     setSelectedArea(null);
+
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+
     if (text.length < 2) {
       setAreaSuggestions([]);
       return;
     }
-    setAreaLoading(true);
-    try {
-      const results = await searchAreas(text);
-      setAreaSuggestions(results);
-    } catch {
-      setAreaSuggestions([]);
-    } finally {
-      setAreaLoading(false);
-    }
+
+    debounceRef.current = setTimeout(async () => {
+      setAreaLoading(true);
+      try {
+        const results = await searchAreas(text);
+        setAreaSuggestions(results);
+      } catch {
+        setAreaSuggestions([]);
+      } finally {
+        setAreaLoading(false);
+      }
+    }, 300);
   }, []);
 
   const selectArea = useCallback(async (area: Area) => {
