@@ -17,7 +17,14 @@ def search(
 ):
     data = file.file.read()
     try:
-        img = Image.open(io.BytesIO(data))
+        img = Image.open(io.BytesIO(data)).convert("RGB")
+        # Match submit preprocessing so query and stored embeddings see the same pixels
+        if max(img.size) > 1024:
+            img.thumbnail((1024, 1024), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        buf.seek(0)
+        img = Image.open(buf).convert("RGB")
     except Exception:
         raise HTTPException(400, "Could not decode image")
 
