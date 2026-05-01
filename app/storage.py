@@ -31,3 +31,12 @@ def public_url(key: str) -> str:
     from .config import get_settings
     s = get_settings()
     return f"{s.b2_endpoint_url}/{s.b2_bucket_name}/{key}"
+
+
+def presigned_url(key: str, expires: int = 3600) -> str:
+    from .config import get_settings
+    return _client().generate_presigned_url(
+        "get_object",
+        Params={"Bucket": get_settings().b2_bucket_name, "Key": key},
+        ExpiresIn=expires,
+    )

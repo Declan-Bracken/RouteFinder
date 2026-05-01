@@ -7,11 +7,13 @@ import { StatusBar } from "expo-status-bar";
 import HomeScreen from "./src/screens/HomeScreen";
 import SubmitScreen from "./src/screens/SubmitScreen";
 import IdentifyScreen from "./src/screens/IdentifyScreen";
+import ReviewScreen from "./src/screens/ReviewScreen";
 
 export type RootStackParamList = {
   Home: undefined;
   Submit: undefined;
   Identify: undefined;
+  Review: undefined;
 };
 
 const Stack = createStackNavigator<RootStackParamList>();
@@ -46,6 +48,19 @@ export default function App() {
               options={{
                 headerShown: true,
                 title: "Submit a Photo",
+                headerBackTitle: "Home",
+                headerStyle: { backgroundColor: "#fff" },
+                headerTintColor: "#2563eb",
+                headerTitleStyle: { fontWeight: "700", color: "#111827" },
+                headerShadowVisible: false,
+              }}
+            />
+            <Stack.Screen
+              name="Review"
+              component={ReviewScreen}
+              options={{
+                headerShown: true,
+                title: "Review Submissions",
                 headerBackTitle: "Home",
                 headerStyle: { backgroundColor: "#fff" },
                 headerTintColor: "#2563eb",

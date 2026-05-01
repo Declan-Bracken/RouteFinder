@@ -78,6 +78,39 @@ export async function getRoutes(areaId: number): Promise<RouteDetail[]> {
   return res.json();
 }
 
+export interface PendingImage {
+  id: string;
+  url: string;
+  submitted_by: string;
+  created_at: string | null;
+  route_id: number;
+  route_name: string;
+  grade: string;
+  area: string;
+}
+
+export async function getPendingImages(): Promise<{ count: number; images: PendingImage[] }> {
+  const res = await fetch(`${BASE_URL}/admin/review/pending`);
+  if (!res.ok) throw new Error("Failed to fetch pending images");
+  return res.json();
+}
+
+export async function reviewImage(
+  imageId: string,
+  action: "approve" | "reject",
+  correctRouteId?: number,
+): Promise<void> {
+  const res = await fetch(`${BASE_URL}/admin/review/${imageId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, correct_route_id: correctRouteId ?? null }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Review failed: ${text}`);
+  }
+}
+
 export async function submitImage(
   imageUri: string,
   routeId: number,
