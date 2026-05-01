@@ -16,6 +16,7 @@ import AreaRouteSearch from "../components/AreaRouteSearch";
 type Step = "loading" | "review" | "correcting" | "done";
 
 export default function ReviewScreen() {
+  const { width } = useWindowDimensions();
   const [step, setStep]       = useState<Step>("loading");
   const [queue, setQueue]     = useState<PendingImage[]>([]);
   const [index, setIndex]     = useState(0);
@@ -133,7 +134,6 @@ export default function ReviewScreen() {
 
   // ── Review card ──────────────────────────────────────────────────────────────
   const remaining = queue.length - index;
-  const { width } = useWindowDimensions();
   const imageHeight = Math.round(width * 0.75); // 4:3 aspect, full width
 
   return (
