@@ -2,7 +2,7 @@ import io
 import uuid
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from PIL import Image
+from PIL import Image, ImageOps
 
 from ..db import get_conn
 from ..storage import upload
@@ -29,7 +29,7 @@ def submit_image(
         raise HTTPException(400, "Image exceeds 10 MB")
 
     try:
-        img = Image.open(io.BytesIO(data)).convert("RGB")
+        img = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
     except Exception:
         raise HTTPException(400, "Could not decode image")
 
