@@ -1,8 +1,7 @@
-import React, { useState, useCallback, useRef } from "react";
+import React, { useState, useCallback } from "react";
 import {
   View,
   Text,
-  TextInput,
   TouchableOpacity,
   Image,
   ActivityIndicator,
@@ -13,16 +12,16 @@ import {
   Platform,
   useWindowDimensions,
 } from "react-native";
+
 import * as ImagePicker from "expo-image-picker";
 import {
-  unifiedSearch,
   getRoutes,
   submitImage,
   AreaResult,
   RouteResult,
   RouteDetail,
-  SearchResults,
 } from "../api/client";
+import AreaRouteSearch from "../components/AreaRouteSearch";
 
 type Step = "search" | "routes" | "photo" | "submitting" | "done";
 
@@ -31,9 +30,6 @@ export default function SubmitScreen() {
   const [step, setStep] = useState<Step>("search");
 
   const [query, setQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<SearchResults | null>(null);
-  const [searchLoading, setSearchLoading] = useState(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [selectedArea, setSelectedArea] = useState<AreaResult | null>(null);
   const [routes, setRoutes] = useState<RouteDetail[]>([]);
@@ -42,29 +38,8 @@ export default function SubmitScreen() {
   const [selectedRoute, setSelectedRoute] = useState<RouteDetail | RouteResult | null>(null);
   const [imageUri, setImageUri] = useState<string | null>(null);
 
-  const handleQueryChange = useCallback((text: string) => {
-    setQuery(text);
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (text.length < 2) {
-      setSearchResults(null);
-      return;
-    }
-    debounceRef.current = setTimeout(async () => {
-      setSearchLoading(true);
-      try {
-        const results = await unifiedSearch(text);
-        setSearchResults(results);
-      } catch {
-        setSearchResults(null);
-      } finally {
-        setSearchLoading(false);
-      }
-    }, 300);
-  }, []);
-
   const selectArea = useCallback(async (area: AreaResult) => {
     setSelectedArea(area);
-    setSearchResults(null);
     setQuery(area.full_path);
     setRoutesLoading(true);
     setStep("routes");
@@ -80,7 +55,6 @@ export default function SubmitScreen() {
 
   const selectRoute = useCallback((route: RouteDetail | RouteResult) => {
     setSelectedRoute(route);
-    setSearchResults(null);
     setStep("photo");
   }, []);
 
@@ -94,7 +68,6 @@ export default function SubmitScreen() {
   const resetAll = useCallback(() => {
     setStep("search");
     setQuery("");
-    setSearchResults(null);
     setSelectedArea(null);
     setRoutes([]);
     setSelectedRoute(null);
@@ -102,11 +75,18 @@ export default function SubmitScreen() {
   }, []);
 
   const pickImage = useCallback(async () => {
+    if (Platform.OS !== "web") {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== "granted") {
+        Alert.alert("Permission needed", "Photo library access is required.");
+        return;
+      }
+    }
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ["images"],
       quality: 0.9,
     });
-    if (!result.canceled) setImageUri(result.assets[0].uri);
+    if (!result.canceled && result.assets?.[0]) setImageUri(result.assets[0].uri);
   }, []);
 
   const takePhoto = useCallback(async () => {
@@ -116,7 +96,7 @@ export default function SubmitScreen() {
       return;
     }
     const result = await ImagePicker.launchCameraAsync({ quality: 0.9 });
-    if (!result.canceled) setImageUri(result.assets[0].uri);
+    if (!result.canceled && result.assets?.[0]) setImageUri(result.assets[0].uri);
   }, []);
 
   const handleSubmit = useCallback(async () => {
@@ -236,14 +216,6 @@ export default function SubmitScreen() {
   }
 
   // ── Search step ─────────────────────────────────────────────────────────────
-  const sections: { title: string; data: (AreaResult | RouteResult)[]; type: "area" | "route" }[] = [];
-  if (searchResults?.areas?.length) {
-    sections.push({ title: "Areas", data: searchResults.areas, type: "area" });
-  }
-  if (searchResults?.routes?.length) {
-    sections.push({ title: "Routes", data: searchResults.routes, type: "route" });
-  }
-
   return (
     <KeyboardAvoidingView
       style={styles.fill}
@@ -252,55 +224,14 @@ export default function SubmitScreen() {
       <View style={styles.container}>
         <Text style={styles.heading}>Submit a route photo</Text>
         <Text style={styles.label}>Search area or route</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="e.g. Mount Nemo, Lop Sided…"
+        <AreaRouteSearch
           value={query}
-          onChangeText={handleQueryChange}
-          autoCorrect={false}
+          onChangeText={setQuery}
+          placeholder="e.g. Mount Nemo, Lop Sided…"
+          showRoutes
+          onSelectArea={selectArea}
+          onSelectRoute={selectRoute}
         />
-
-        {searchLoading && <ActivityIndicator style={{ marginTop: 8 }} />}
-
-        {sections.length > 0 && (
-          <ScrollView
-            style={styles.dropdown}
-            keyboardShouldPersistTaps="handled"
-            nestedScrollEnabled
-          >
-            {sections.map((section) => (
-              <View key={section.title}>
-                <Text style={styles.sectionHeader}>{section.title}</Text>
-                {section.data.map((item) =>
-                  section.type === "area" ? (
-                    <TouchableOpacity
-                      key={(item as AreaResult).id}
-                      style={styles.dropdownItem}
-                      onPress={() => selectArea(item as AreaResult)}
-                    >
-                      <Text style={styles.dropdownPrimary}>{(item as AreaResult).full_path}</Text>
-                      <Text style={styles.dropdownMeta}>
-                        {(item as AreaResult).route_count} routes
-                      </Text>
-                    </TouchableOpacity>
-                  ) : (
-                    <TouchableOpacity
-                      key={(item as RouteResult).id}
-                      style={styles.dropdownItem}
-                      onPress={() => selectRoute(item as RouteResult)}
-                    >
-                      <Text style={styles.dropdownPrimary}>{(item as RouteResult).name}</Text>
-                      <Text style={styles.dropdownMeta}>
-                        {(item as RouteResult).grade ? `${(item as RouteResult).grade} · ` : ""}
-                        {(item as RouteResult).area}
-                      </Text>
-                    </TouchableOpacity>
-                  )
-                )}
-              </View>
-            ))}
-          </ScrollView>
-        )}
       </View>
     </KeyboardAvoidingView>
   );
@@ -353,46 +284,6 @@ const styles = StyleSheet.create({
   clearButtonText: {
     fontSize: 16,
     color: "#9ca3af",
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: "#d1d5db",
-    borderRadius: 10,
-    padding: 12,
-    fontSize: 16,
-    backgroundColor: "#fff",
-  },
-  dropdown: {
-    borderWidth: 1,
-    borderColor: "#d1d5db",
-    borderRadius: 10,
-    backgroundColor: "#fff",
-    marginTop: 4,
-    maxHeight: 420,
-  },
-  sectionHeader: {
-    fontSize: 11,
-    fontWeight: "700",
-    color: "#9ca3af",
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    backgroundColor: "#f9fafb",
-  },
-  dropdownItem: {
-    padding: 12,
-    borderTopWidth: 1,
-    borderTopColor: "#f3f4f6",
-  },
-  dropdownPrimary: {
-    fontSize: 15,
-    fontWeight: "500",
-  },
-  dropdownMeta: {
-    fontSize: 13,
-    color: "#6b7280",
-    marginTop: 2,
   },
   // Routes step
   routesHeader: {

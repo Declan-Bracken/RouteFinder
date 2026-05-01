@@ -1,4 +1,5 @@
 import io
+from typing import Optional
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from PIL import Image, ImageOps
@@ -14,6 +15,7 @@ router = APIRouter()
 def search(
     file: UploadFile = File(...),
     top_k: int = Query(default=5, ge=1, le=20),
+    area_id: Optional[int] = Query(default=None),
 ):
     data = file.file.read()
     try:
@@ -33,26 +35,55 @@ def search(
 
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT
-                    r.id,
-                    r.name,
-                    r.grade,
-                    r.url,
-                    a.name          AS area_name,
-                    1 - (e.embedding <=> %s::vector) AS similarity
-                FROM image_embeddings e
-                JOIN images  i ON i.id       = e.image_id
-                JOIN routes  r ON r.id       = i.route_id
-                JOIN areas   a ON a.id       = r.area_id
-                WHERE e.model_version = %s
-                  AND i.status = 'approved'
-                ORDER BY e.embedding <=> %s::vector
-                LIMIT %s
-                """,
-                (vec_str, model_version, vec_str, top_k),
-            )
+            if area_id is not None:
+                cur.execute(
+                    """
+                    WITH RECURSIVE sub_areas AS (
+                        SELECT id FROM areas WHERE id = %s
+                        UNION ALL
+                        SELECT a.id FROM areas a
+                        JOIN sub_areas s ON a.parent_id = s.id
+                    )
+                    SELECT
+                        r.id,
+                        r.name,
+                        r.grade,
+                        r.url,
+                        a.name          AS area_name,
+                        1 - (e.embedding <=> %s::vector) AS similarity
+                    FROM image_embeddings e
+                    JOIN images  i ON i.id       = e.image_id
+                    JOIN routes  r ON r.id       = i.route_id
+                    JOIN areas   a ON a.id       = r.area_id
+                    WHERE e.model_version = %s
+                      AND i.status = 'approved'
+                      AND r.area_id IN (SELECT id FROM sub_areas)
+                    ORDER BY e.embedding <=> %s::vector
+                    LIMIT %s
+                    """,
+                    (area_id, vec_str, model_version, vec_str, top_k),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT
+                        r.id,
+                        r.name,
+                        r.grade,
+                        r.url,
+                        a.name          AS area_name,
+                        1 - (e.embedding <=> %s::vector) AS similarity
+                    FROM image_embeddings e
+                    JOIN images  i ON i.id       = e.image_id
+                    JOIN routes  r ON r.id       = i.route_id
+                    JOIN areas   a ON a.id       = r.area_id
+                    WHERE e.model_version = %s
+                      AND i.status = 'approved'
+                    ORDER BY e.embedding <=> %s::vector
+                    LIMIT %s
+                    """,
+                    (vec_str, model_version, vec_str, top_k),
+                )
             rows = cur.fetchall()
 
     return {
