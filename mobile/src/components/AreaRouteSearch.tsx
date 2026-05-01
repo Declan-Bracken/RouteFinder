@@ -118,8 +118,11 @@ export default function AreaRouteSearch({
                       {area.full_path}
                     </Text>
                     <Text style={[styles.itemMeta, blocked && styles.textRed, warned && styles.textAmber]}>
-                      {area.route_count} routes
-                      {blocked ? " — too large" : warned ? " — large area" : ""}
+                      {blocked
+                        ? `${area.route_count} routes — try searching for a specific wall within this area`
+                        : warned
+                        ? `${area.route_count} routes — large area`
+                        : `${area.route_count} routes`}
                     </Text>
                   </TouchableOpacity>
                 );
