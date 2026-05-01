@@ -89,7 +89,7 @@ def main():
     if not args.database_url:
         sys.exit("DATABASE_URL not set — add it to .env or pass --database_url")
 
-    from train import RouteFinderModel, EVAL_TRANSFORM
+    from inference import RouteFinderModel, EVAL_TRANSFORM
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Loading {args.checkpoint} on {device}")

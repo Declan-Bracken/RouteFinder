@@ -51,7 +51,7 @@ def _load():
     if train_dir not in sys.path:
         sys.path.insert(0, os.path.abspath(train_dir))
 
-    from train import RouteFinderModel, EVAL_TRANSFORM
+    from inference import RouteFinderModel, EVAL_TRANSFORM
     import torch
 
     _device = "cuda" if torch.cuda.is_available() else "cpu"
