@@ -8,6 +8,7 @@ import {
   Alert,
   StyleSheet,
   ScrollView,
+  useWindowDimensions,
 } from "react-native";
 import { getPendingImages, reviewImage, PendingImage, RouteResult } from "../api/client";
 import AreaRouteSearch from "../components/AreaRouteSearch";
@@ -132,6 +133,8 @@ export default function ReviewScreen() {
 
   // ── Review card ──────────────────────────────────────────────────────────────
   const remaining = queue.length - index;
+  const { width } = useWindowDimensions();
+  const imageHeight = Math.round(width * 0.75); // 4:3 aspect, full width
 
   return (
     <View style={styles.fill}>
@@ -140,8 +143,8 @@ export default function ReviewScreen() {
 
         <Image
           source={{ uri: current.url }}
-          style={styles.image}
-          resizeMode="cover"
+          style={[styles.image, { height: imageHeight }]}
+          resizeMode="contain"
         />
 
         <View style={styles.infoCard}>
@@ -194,10 +197,10 @@ const styles = StyleSheet.create({
     gap: 16, backgroundColor: "#fff",
   },
   container: { padding: 20 },
-  cardContainer: { padding: 20, paddingBottom: 8 },
+  cardContainer: { padding: 20, paddingBottom: 120 },
 
   counter: { fontSize: 13, color: "#9ca3af", marginBottom: 12, textAlign: "center" },
-  image: { width: "100%", height: 340, borderRadius: 12, marginBottom: 16 },
+  image: { width: "100%", borderRadius: 12, marginBottom: 16, backgroundColor: "#f3f4f6" },
 
   infoCard: {
     padding: 14, borderRadius: 10,
