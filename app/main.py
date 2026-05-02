@@ -6,6 +6,7 @@ from .api.search import router as search_router
 from .api.areas import router as areas_router
 from .api.feedback import router as feedback_router
 from .api.review import router as review_router
+from .api.embed import router as embed_router
 
 app = FastAPI(title="RouteFinder API", version="0.1.0")
 
@@ -21,6 +22,7 @@ app.include_router(search_router)
 app.include_router(areas_router)
 app.include_router(feedback_router)
 app.include_router(review_router)
+app.include_router(embed_router)
 
 
 @app.get("/health")

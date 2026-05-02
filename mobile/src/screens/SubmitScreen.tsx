@@ -193,6 +193,24 @@ export default function SubmitScreen() {
             <Text style={styles.changeLinkText}>← Change route</Text>
           </TouchableOpacity>
 
+          <View style={styles.tipsCard}>
+            <Text style={styles.tipsTitle}>Photo tips</Text>
+            <View style={styles.tipsColumns}>
+              <View style={styles.tipsCol}>
+                <Text style={styles.tipsGood}>✓  Do</Text>
+                <Text style={styles.tipItem}>Shoot at a variety of angles — straight on, from below, or stepped back</Text>
+                <Text style={styles.tipItem}>Show the key features that distinguish this route</Text>
+              </View>
+              <View style={styles.tipsDivider} />
+              <View style={styles.tipsCol}>
+                <Text style={styles.tipsBad}>✕  Don't</Text>
+                <Text style={styles.tipItem}>Include multiple routes in the frame</Text>
+                <Text style={styles.tipItem}>Shoot at an obstructive angle</Text>
+                <Text style={styles.tipItem}>Get too close — the full line should be visible</Text>
+              </View>
+            </View>
+          </View>
+
           <Text style={styles.label}>Photo</Text>
           <View style={styles.photoButtons}>
             <TouchableOpacity style={styles.secondaryButton} onPress={takePhoto}>
@@ -349,6 +367,51 @@ const styles = StyleSheet.create({
   changeLinkText: {
     color: "#2563eb",
     fontSize: 14,
+  },
+  tipsCard: {
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#e5e7eb",
+    backgroundColor: "#f9fafb",
+    padding: 12,
+    marginBottom: 16,
+  },
+  tipsTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#374151",
+    marginBottom: 8,
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+  },
+  tipsColumns: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  tipsCol: {
+    flex: 1,
+    gap: 4,
+  },
+  tipsDivider: {
+    width: 1,
+    backgroundColor: "#e5e7eb",
+  },
+  tipsGood: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#16a34a",
+    marginBottom: 2,
+  },
+  tipsBad: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#dc2626",
+    marginBottom: 2,
+  },
+  tipItem: {
+    fontSize: 12,
+    color: "#6b7280",
+    lineHeight: 16,
   },
   photoButtons: {
     flexDirection: "row",

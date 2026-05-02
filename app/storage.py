@@ -1,3 +1,4 @@
+import io
 import boto3
 from botocore.config import Config as BotoConfig
 from functools import lru_cache
@@ -31,6 +32,14 @@ def public_url(key: str) -> str:
     from .config import get_settings
     s = get_settings()
     return f"{s.b2_endpoint_url}/{s.b2_bucket_name}/{key}"
+
+
+def download(key: str) -> bytes:
+    from .config import get_settings
+    buf = io.BytesIO()
+    _client().download_fileobj(get_settings().b2_bucket_name, key, buf)
+    buf.seek(0)
+    return buf.read()
 
 
 def presigned_url(key: str, expires: int = 3600) -> str:

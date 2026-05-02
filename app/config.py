@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     model_checkpoint_b2_key: str = ""
     model_version: str = "v1"
 
+    # Admin API key — set ADMIN_API_KEY in Railway env + mobile .env.local
+    admin_api_key: str = ""
+
     class Config:
         env_file = ".env"
 

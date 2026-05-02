@@ -1,12 +1,13 @@
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from ..auth import require_admin
 from ..db import get_conn
 from ..storage import presigned_url
 
-router = APIRouter(prefix="/admin/review")
+router = APIRouter(prefix="/admin/review", dependencies=[Depends(require_admin)])
 
 
 @router.get("/pending")

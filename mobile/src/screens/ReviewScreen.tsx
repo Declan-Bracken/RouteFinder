@@ -7,7 +7,6 @@ import {
   ActivityIndicator,
   Alert,
   StyleSheet,
-  ScrollView,
   useWindowDimensions,
 } from "react-native";
 import { getPendingImages, reviewImage, PendingImage, RouteResult } from "../api/client";
@@ -134,37 +133,34 @@ export default function ReviewScreen() {
 
   // ── Review card ──────────────────────────────────────────────────────────────
   const remaining = queue.length - index;
-  const imageHeight = Math.round(width * 0.75); // 4:3 aspect, full width
 
   return (
     <View style={styles.fill}>
-      <ScrollView contentContainerStyle={styles.cardContainer}>
-        <Text style={styles.counter}>{remaining} remaining</Text>
+      <Text style={styles.counter}>{remaining} remaining</Text>
 
-        <Image
-          source={{ uri: current.url }}
-          style={[styles.image, { height: imageHeight }]}
-          resizeMode="contain"
-        />
+      <Image
+        source={{ uri: current.url }}
+        style={styles.image}
+        resizeMode="contain"
+      />
 
-        <View style={styles.infoCard}>
-          <Text style={styles.routeName}>{current.route_name}</Text>
-          <Text style={styles.routeMeta}>
-            {current.grade ? `${current.grade} · ` : ""}{current.area}
-          </Text>
-          <Text style={styles.submittedBy}>
-            Submitted by {current.submitted_by || "anonymous"}
-            {current.created_at ? ` · ${new Date(current.created_at).toLocaleDateString()}` : ""}
-          </Text>
-        </View>
+      <View style={styles.infoCard}>
+        <Text style={styles.routeName}>{current.route_name}</Text>
+        <Text style={styles.routeMeta}>
+          {current.grade ? `${current.grade} · ` : ""}{current.area}
+        </Text>
+        <Text style={styles.submittedBy}>
+          Submitted by {current.submitted_by || "anonymous"}
+          {current.created_at ? ` · ${new Date(current.created_at).toLocaleDateString()}` : ""}
+        </Text>
+      </View>
 
-        <TouchableOpacity
-          style={styles.correctLink}
-          onPress={() => setStep("correcting")}
-        >
-          <Text style={styles.correctLinkText}>Wrong route? Correct before approving</Text>
-        </TouchableOpacity>
-      </ScrollView>
+      <TouchableOpacity
+        style={styles.correctLink}
+        onPress={() => setStep("correcting")}
+      >
+        <Text style={styles.correctLinkText}>Wrong route? Correct before approving</Text>
+      </TouchableOpacity>
 
       <View style={styles.footer}>
         <TouchableOpacity
@@ -191,16 +187,15 @@ export default function ReviewScreen() {
 }
 
 const styles = StyleSheet.create({
-  fill: { flex: 1, backgroundColor: "#fff" },
+  fill: { flex: 1, backgroundColor: "#fff", paddingHorizontal: 16 },
   centered: {
     flex: 1, justifyContent: "center", alignItems: "center",
     gap: 16, backgroundColor: "#fff",
   },
   container: { padding: 20 },
-  cardContainer: { padding: 20, paddingBottom: 120 },
 
-  counter: { fontSize: 13, color: "#9ca3af", marginBottom: 12, textAlign: "center" },
-  image: { width: "100%", borderRadius: 12, marginBottom: 16, backgroundColor: "#f3f4f6" },
+  counter: { fontSize: 13, color: "#9ca3af", marginTop: 16, marginBottom: 8, textAlign: "center" },
+  image: { flex: 1, width: "100%", borderRadius: 12, marginBottom: 12, backgroundColor: "#f3f4f6" },
 
   infoCard: {
     padding: 14, borderRadius: 10,
@@ -216,7 +211,9 @@ const styles = StyleSheet.create({
 
   footer: {
     flexDirection: "row", gap: 12,
-    padding: 16, paddingBottom: 32,
+    paddingVertical: 16, paddingBottom: 32,
+    marginHorizontal: -16,
+    paddingHorizontal: 16,
     borderTopWidth: 1, borderTopColor: "#f3f4f6",
     backgroundColor: "#fff",
   },

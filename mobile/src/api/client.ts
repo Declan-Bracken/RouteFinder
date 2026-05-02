@@ -1,6 +1,9 @@
 import { Platform } from "react-native";
+import { ADMIN_API_KEY } from "../config";
 
 const BASE_URL = "https://routefinder-production.up.railway.app";
+
+const adminHeaders = () => ({ "X-Admin-Key": ADMIN_API_KEY });
 
 async function appendImageToForm(form: FormData, imageUri: string, fieldName = "file") {
   if (Platform.OS === "web") {
@@ -90,7 +93,7 @@ export interface PendingImage {
 }
 
 export async function getPendingImages(): Promise<{ count: number; images: PendingImage[] }> {
-  const res = await fetch(`${BASE_URL}/admin/review/pending`);
+  const res = await fetch(`${BASE_URL}/admin/review/pending`, { headers: adminHeaders() });
   if (!res.ok) throw new Error("Failed to fetch pending images");
   return res.json();
 }
@@ -102,7 +105,7 @@ export async function reviewImage(
 ): Promise<void> {
   const res = await fetch(`${BASE_URL}/admin/review/${imageId}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...adminHeaders() },
     body: JSON.stringify({ action, correct_route_id: correctRouteId ?? null }),
   });
   if (!res.ok) {
