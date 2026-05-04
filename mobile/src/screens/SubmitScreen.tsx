@@ -251,8 +251,6 @@ export default function SubmitScreen() {
   if (step === "photo" && selectedRoute) {
     return (
       <View style={styles.fill}>
-
-        {/* Route info — always visible at top */}
         <View style={styles.photoHeader}>
           <View style={styles.selectedRouteCard}>
             <Text style={styles.selectedRouteName}>{selectedRoute.name}</Text>
@@ -264,32 +262,20 @@ export default function SubmitScreen() {
           <TouchableOpacity onPress={backToRoutes} style={styles.changeLink}>
             <Text style={styles.changeLinkText}>← Change route</Text>
           </TouchableOpacity>
-        </View>
 
-        {/* Thumbnails scroll in the middle */}
-        <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.thumbScrollContent}>
-          {imageUris.length === 0 ? (
-            <Text style={styles.noPhotosHint}>No photos selected yet</Text>
-          ) : (
-            <View style={styles.thumbnailGrid}>
-              {imageUris.map((uri, i) => (
-                <View key={uri + i} style={styles.thumbnailWrapper}>
-                  <Image source={{ uri }} style={styles.thumbnail} resizeMode="cover" />
-                  <TouchableOpacity
-                    style={styles.thumbnailRemove}
-                    onPress={() => setImageUris((prev) => prev.filter((_, j) => j !== i))}
-                  >
-                    <Text style={styles.thumbnailRemoveText}>✕</Text>
-                  </TouchableOpacity>
-                </View>
-              ))}
-            </View>
-          )}
-        </ScrollView>
+          <TouchableOpacity
+            style={[styles.primaryButton, !imageUris.length && styles.buttonDisabled]}
+            disabled={!imageUris.length}
+            onPress={handleSubmit}
+          >
+            <Text style={styles.primaryButtonText}>
+              {imageUris.length > 0
+                ? `Submit ${imageUris.length} photo${imageUris.length > 1 ? "s" : ""}`
+                : "Select photos below"}
+            </Text>
+          </TouchableOpacity>
 
-        {/* All action buttons pinned at bottom */}
-        <View style={styles.photoFooter}>
-          <View style={styles.photoButtons}>
+          <View style={[styles.photoButtons, { marginTop: 10, marginBottom: 0 }]}>
             <TouchableOpacity style={styles.secondaryButton} onPress={takePhoto}>
               <Text style={styles.secondaryButtonText}>Take photo</Text>
             </TouchableOpacity>
@@ -299,18 +285,27 @@ export default function SubmitScreen() {
               </Text>
             </TouchableOpacity>
           </View>
-          <TouchableOpacity
-            style={[styles.primaryButton, !imageUris.length && styles.buttonDisabled]}
-            disabled={!imageUris.length}
-            onPress={handleSubmit}
-          >
-            <Text style={styles.primaryButtonText}>
-              {imageUris.length > 0
-                ? `Submit ${imageUris.length} photo${imageUris.length > 1 ? "s" : ""}`
-                : "Select photos to submit"}
-            </Text>
-          </TouchableOpacity>
         </View>
+
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.thumbScrollContent}>
+          {imageUris.length === 0
+            ? <Text style={styles.noPhotosHint}>No photos selected yet</Text>
+            : (
+              <View style={styles.thumbnailGrid}>
+                {imageUris.map((uri, i) => (
+                  <View key={uri + i} style={styles.thumbnailWrapper}>
+                    <Image source={{ uri }} style={styles.thumbnail} resizeMode="cover" />
+                    <TouchableOpacity
+                      style={styles.thumbnailRemove}
+                      onPress={() => setImageUris((prev) => prev.filter((_, j) => j !== i))}
+                    >
+                      <Text style={styles.thumbnailRemoveText}>✕</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+            )}
+        </ScrollView>
       </View>
     );
   }
