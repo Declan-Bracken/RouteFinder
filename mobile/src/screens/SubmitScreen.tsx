@@ -292,7 +292,9 @@ export default function SubmitScreen() {
               <Text style={styles.secondaryButtonText}>Take photo</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.secondaryButton} onPress={pickImage}>
-              <Text style={styles.secondaryButtonText}>Choose from library</Text>
+              <Text style={styles.secondaryButtonText}>
+                {imageUris.length > 0 ? "Add more photos" : "Choose from library"}
+              </Text>
             </TouchableOpacity>
           </View>
           {imageUris.length > 0 && (
