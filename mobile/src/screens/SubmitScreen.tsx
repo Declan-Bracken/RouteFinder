@@ -91,12 +91,25 @@ export default function SubmitScreen() {
   }, []);
 
   const pickImage = useCallback(async () => {
-    if (Platform.OS !== "web") {
-      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== "granted") {
-        Alert.alert("Permission needed", "Photo library access is required.");
-        return;
-      }
+    if (Platform.OS === "web") {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.multiple = true;
+      input.accept = "image/*";
+      input.onchange = (e) => {
+        const files = (e.target as HTMLInputElement).files;
+        if (files?.length) {
+          const uris = Array.from(files).map((f) => URL.createObjectURL(f));
+          setImageUris((prev) => [...prev, ...uris]);
+        }
+      };
+      input.click();
+      return;
+    }
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("Permission needed", "Photo library access is required.");
+      return;
     }
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ["images"],
