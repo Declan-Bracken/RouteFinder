@@ -38,7 +38,6 @@ def unified_search(q: str = Query(..., min_length=2)):
                 LEFT JOIN all_descendants ad ON ad.root_id = m.id
                 LEFT JOIN routes r ON r.area_id = ad.id
                 GROUP BY m.id, m.name, p.name
-                HAVING COUNT(DISTINCT r.id) > 0
                 ORDER BY COUNT(DISTINCT r.id) DESC
                 LIMIT 8
                 """,

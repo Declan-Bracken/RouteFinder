@@ -39,7 +39,8 @@ export default function SubmitScreen() {
   const [routesLoading, setRoutesLoading] = useState(false);
 
   const [selectedRoute, setSelectedRoute] = useState<RouteDetail | RouteResult | null>(null);
-  const [imageUri, setImageUri] = useState<string | null>(null);
+  const [imageUris, setImageUris] = useState<string[]>([]);
+  const [submitProgress, setSubmitProgress] = useState("");
 
   // Suggest area state
   const [suggestAreaName, setSuggestAreaName]       = useState("");
@@ -75,7 +76,7 @@ export default function SubmitScreen() {
   // Go back to route list preserving area + routes state
   const backToRoutes = useCallback(() => {
     setSelectedRoute(null);
-    setImageUri(null);
+    setImageUris([]);
     setStep("routes");
   }, []);
 
@@ -85,7 +86,8 @@ export default function SubmitScreen() {
     setSelectedArea(null);
     setRoutes([]);
     setSelectedRoute(null);
-    setImageUri(null);
+    setImageUris([]);
+    setSubmitProgress("");
   }, []);
 
   const pickImage = useCallback(async () => {
@@ -98,9 +100,12 @@ export default function SubmitScreen() {
     }
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ["images"],
+      allowsMultipleSelection: true,
       quality: 0.9,
     });
-    if (!result.canceled && result.assets?.[0]) setImageUri(result.assets[0].uri);
+    if (!result.canceled && result.assets?.length) {
+      setImageUris((prev) => [...prev, ...result.assets.map((a) => a.uri)]);
+    }
   }, []);
 
   const takePhoto = useCallback(async () => {
@@ -110,20 +115,28 @@ export default function SubmitScreen() {
       return;
     }
     const result = await ImagePicker.launchCameraAsync({ quality: 0.9 });
-    if (!result.canceled && result.assets?.[0]) setImageUri(result.assets[0].uri);
+    if (!result.canceled && result.assets?.[0]) {
+      setImageUris((prev) => [...prev, result.assets[0].uri]);
+    }
   }, []);
 
   const handleSubmit = useCallback(async () => {
-    if (!imageUri || !selectedRoute) return;
+    if (!imageUris.length || !selectedRoute) return;
     setStep("submitting");
-    try {
-      await submitImage(imageUri, selectedRoute.id);
-      setStep("done");
-    } catch (e: any) {
-      Alert.alert("Submit failed", e.message);
-      setStep("photo");
+    let failed = 0;
+    for (let i = 0; i < imageUris.length; i++) {
+      setSubmitProgress(`${i + 1} / ${imageUris.length}`);
+      try {
+        await submitImage(imageUris[i], selectedRoute.id);
+      } catch {
+        failed++;
+      }
     }
-  }, [imageUri, selectedRoute]);
+    if (failed > 0) {
+      Alert.alert("Partial failure", `${failed} photo(s) failed to upload.`);
+    }
+    setStep("done");
+  }, [imageUris, selectedRoute]);
 
   const handleSuggestArea = useCallback(async () => {
     if (!suggestAreaName.trim()) return;
@@ -160,7 +173,9 @@ export default function SubmitScreen() {
     return (
       <View style={styles.centered}>
         <ActivityIndicator size="large" color="#2563eb" />
-        <Text style={styles.statusText}>Uploading…</Text>
+        <Text style={styles.statusText}>
+          Uploading{submitProgress ? ` ${submitProgress}` : "…"}
+        </Text>
       </View>
     );
   }
@@ -258,7 +273,7 @@ export default function SubmitScreen() {
             </View>
           </View>
 
-          <Text style={styles.label}>Photo</Text>
+          <Text style={styles.label}>Photos</Text>
           <View style={styles.photoButtons}>
             <TouchableOpacity style={styles.secondaryButton} onPress={takePhoto}>
               <Text style={styles.secondaryButtonText}>Take photo</Text>
@@ -267,11 +282,25 @@ export default function SubmitScreen() {
               <Text style={styles.secondaryButtonText}>Choose from library</Text>
             </TouchableOpacity>
           </View>
-          {imageUri && (
+          {imageUris.length > 0 && (
             <>
-              <Image source={{ uri: imageUri }} style={styles.preview} resizeMode="cover" />
+              <View style={styles.thumbnailGrid}>
+                {imageUris.map((uri, i) => (
+                  <View key={uri + i} style={styles.thumbnailWrapper}>
+                    <Image source={{ uri }} style={styles.thumbnail} resizeMode="cover" />
+                    <TouchableOpacity
+                      style={styles.thumbnailRemove}
+                      onPress={() => setImageUris((prev) => prev.filter((_, j) => j !== i))}
+                    >
+                      <Text style={styles.thumbnailRemoveText}>✕</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
               <TouchableOpacity style={styles.primaryButton} onPress={handleSubmit}>
-                <Text style={styles.primaryButtonText}>Submit</Text>
+                <Text style={styles.primaryButtonText}>
+                  Submit {imageUris.length} photo{imageUris.length > 1 ? "s" : ""}
+                </Text>
               </TouchableOpacity>
             </>
           )}
@@ -593,6 +622,38 @@ const styles = StyleSheet.create({
   buttonDisabled: { opacity: 0.5 },
   suggestLink: { alignItems: "center", paddingVertical: 14 },
   suggestLinkText: { color: "#6b7280", fontSize: 14 },
+  thumbnailGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 12,
+    marginBottom: 4,
+  },
+  thumbnailWrapper: {
+    width: "30%",
+    aspectRatio: 1,
+  },
+  thumbnail: {
+    width: "100%",
+    height: "100%",
+    borderRadius: 8,
+  },
+  thumbnailRemove: {
+    position: "absolute",
+    top: 4,
+    right: 4,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: "rgba(0,0,0,0.6)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  thumbnailRemoveText: {
+    color: "#fff",
+    fontSize: 10,
+    fontWeight: "700",
+  },
   preview: {
     width: "100%",
     height: 260,
