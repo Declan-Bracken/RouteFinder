@@ -14,7 +14,7 @@ export default function HomeScreen() {
   useFocusEffect(
     React.useCallback(() => {
       getPendingImages()
-        .then(({ count }) => setPendingCount(count))
+        .then(({ count }) => setPendingCount(count))  // count now includes areas + routes
         .catch(() => setPendingCount(null));
     }, []),
   );

@@ -20,7 +20,7 @@ def unified_search(q: str = Query(..., min_length=2)):
             cur.execute(
                 """
                 WITH RECURSIVE matching AS (
-                    SELECT id, name, parent_id FROM areas WHERE name ILIKE %s
+                    SELECT id, name, parent_id FROM areas WHERE name ILIKE %s AND status = 'approved'
                 ),
                 all_descendants AS (
                     SELECT id, id AS root_id, 0 AS depth FROM matching
@@ -53,7 +53,7 @@ def unified_search(q: str = Query(..., min_length=2)):
                 FROM routes r
                 JOIN areas a ON a.id = r.area_id
                 LEFT JOIN areas p ON p.id = a.parent_id
-                WHERE r.name ILIKE %s
+                WHERE r.name ILIKE %s AND r.status = 'approved'
                 ORDER BY r.name
                 LIMIT 10
                 """,
@@ -106,7 +106,7 @@ def get_routes(area_id: int):
                 SELECT r.id, r.name, r.grade, r.url, a.name AS area_name
                 FROM routes r
                 JOIN areas a ON a.id = r.area_id
-                WHERE r.area_id IN (SELECT id FROM sub_areas)
+                WHERE r.area_id IN (SELECT id FROM sub_areas) AND r.status = 'approved'
                 ORDER BY a.name, r.name
                 """,
                 (area_id,),

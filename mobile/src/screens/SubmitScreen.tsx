@@ -3,6 +3,7 @@ import {
   View,
   Text,
   TouchableOpacity,
+  TextInput,
   Image,
   ActivityIndicator,
   Alert,
@@ -17,13 +18,15 @@ import * as ImagePicker from "expo-image-picker";
 import {
   getRoutes,
   submitImage,
+  suggestArea,
+  suggestRoute,
   AreaResult,
   RouteResult,
   RouteDetail,
 } from "../api/client";
 import AreaRouteSearch from "../components/AreaRouteSearch";
 
-type Step = "search" | "routes" | "photo" | "submitting" | "done";
+type Step = "search" | "routes" | "photo" | "submitting" | "done" | "suggest_area" | "suggest_route";
 
 export default function SubmitScreen() {
   const { height } = useWindowDimensions();
@@ -37,6 +40,17 @@ export default function SubmitScreen() {
 
   const [selectedRoute, setSelectedRoute] = useState<RouteDetail | RouteResult | null>(null);
   const [imageUri, setImageUri] = useState<string | null>(null);
+
+  // Suggest area state
+  const [suggestAreaName, setSuggestAreaName]       = useState("");
+  const [suggestParentQuery, setSuggestParentQuery] = useState("");
+  const [suggestParentId, setSuggestParentId]       = useState<number | null>(null);
+  const [suggestAreaLoading, setSuggestAreaLoading] = useState(false);
+
+  // Suggest route state
+  const [suggestRouteName, setSuggestRouteName]   = useState("");
+  const [suggestRouteGrade, setSuggestRouteGrade] = useState("");
+  const [suggestRouteLoading, setSuggestRouteLoading] = useState(false);
 
   const selectArea = useCallback(async (area: AreaResult) => {
     setSelectedArea(area);
@@ -111,6 +125,36 @@ export default function SubmitScreen() {
     }
   }, [imageUri, selectedRoute]);
 
+  const handleSuggestArea = useCallback(async () => {
+    if (!suggestAreaName.trim()) return;
+    setSuggestAreaLoading(true);
+    try {
+      await suggestArea(suggestAreaName.trim(), suggestParentId ?? undefined);
+      Alert.alert("Submitted!", "Your area suggestion will appear after review.");
+      setSuggestAreaName(""); setSuggestParentQuery(""); setSuggestParentId(null);
+      setStep("search");
+    } catch (e: any) {
+      Alert.alert("Error", e.message);
+    } finally {
+      setSuggestAreaLoading(false);
+    }
+  }, [suggestAreaName, suggestParentId]);
+
+  const handleSuggestRoute = useCallback(async () => {
+    if (!suggestRouteName.trim() || !suggestRouteGrade.trim() || !selectedArea) return;
+    setSuggestRouteLoading(true);
+    try {
+      await suggestRoute(suggestRouteName.trim(), suggestRouteGrade.trim(), selectedArea.id);
+      Alert.alert("Submitted!", "Your route suggestion will appear after review.");
+      setSuggestRouteName(""); setSuggestRouteGrade("");
+      setStep("routes");
+    } catch (e: any) {
+      Alert.alert("Error", e.message);
+    } finally {
+      setSuggestRouteLoading(false);
+    }
+  }, [suggestRouteName, suggestRouteGrade, selectedArea]);
+
   // ── Submitting ──────────────────────────────────────────────────────────────
   if (step === "submitting") {
     return (
@@ -166,6 +210,9 @@ export default function SubmitScreen() {
                 <Text style={styles.routeGrade}>{r.grade}</Text>
               </TouchableOpacity>
             ))}
+            <TouchableOpacity style={styles.suggestLink} onPress={() => setStep("suggest_route")}>
+              <Text style={styles.suggestLinkText}>Route not listed? Suggest it →</Text>
+            </TouchableOpacity>
           </ScrollView>
         )}
       </View>
@@ -233,6 +280,95 @@ export default function SubmitScreen() {
     );
   }
 
+  // ── Suggest area ─────────────────────────────────────────────────────────────
+  if (step === "suggest_area") {
+    return (
+      <KeyboardAvoidingView style={styles.fill} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        <ScrollView contentContainerStyle={styles.container}>
+          <Text style={styles.heading}>Suggest a new area</Text>
+          <Text style={styles.label}>Area name</Text>
+          <TextInput
+            style={styles.textInput}
+            placeholder="e.g. Limestone Wall"
+            value={suggestAreaName}
+            onChangeText={setSuggestAreaName}
+            autoFocus
+          />
+          <Text style={[styles.label, { marginTop: 16 }]}>Parent area (optional)</Text>
+          <AreaRouteSearch
+            value={suggestParentQuery}
+            onChangeText={setSuggestParentQuery}
+            placeholder="Search for a parent area…"
+            showRoutes={false}
+            onSelectArea={(area) => { setSuggestParentId(area.id); setSuggestParentQuery(area.name); }}
+            onSelectRoute={() => {}}
+          />
+          {suggestParentId && (
+            <TouchableOpacity onPress={() => { setSuggestParentId(null); setSuggestParentQuery(""); }}>
+              <Text style={styles.changeLinkText}>✕ Clear parent</Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity
+            style={[styles.primaryButton, { marginTop: 24 }, !suggestAreaName.trim() && styles.buttonDisabled]}
+            disabled={!suggestAreaName.trim() || suggestAreaLoading}
+            onPress={handleSuggestArea}
+          >
+            {suggestAreaLoading
+              ? <ActivityIndicator color="#fff" />
+              : <Text style={styles.primaryButtonText}>Submit for review</Text>}
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.changeLink} onPress={() => setStep("search")}>
+            <Text style={styles.changeLinkText}>← Back to search</Text>
+          </TouchableOpacity>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    );
+  }
+
+  // ── Suggest route ─────────────────────────────────────────────────────────────
+  if (step === "suggest_route") {
+    return (
+      <KeyboardAvoidingView style={styles.fill} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        <ScrollView contentContainerStyle={styles.container}>
+          <Text style={styles.heading}>Suggest a new route</Text>
+          {selectedArea && (
+            <View style={styles.selectedRouteCard}>
+              <Text style={styles.selectedRouteName}>{selectedArea.name}</Text>
+            </View>
+          )}
+          <Text style={[styles.label, { marginTop: 16 }]}>Route name</Text>
+          <TextInput
+            style={styles.textInput}
+            placeholder="e.g. Crack Attack"
+            value={suggestRouteName}
+            onChangeText={setSuggestRouteName}
+            autoFocus
+          />
+          <Text style={[styles.label, { marginTop: 16 }]}>Grade</Text>
+          <TextInput
+            style={styles.textInput}
+            placeholder="e.g. 5.10a"
+            value={suggestRouteGrade}
+            onChangeText={setSuggestRouteGrade}
+            autoCapitalize="none"
+          />
+          <TouchableOpacity
+            style={[styles.primaryButton, { marginTop: 24 }, (!suggestRouteName.trim() || !suggestRouteGrade.trim()) && styles.buttonDisabled]}
+            disabled={!suggestRouteName.trim() || !suggestRouteGrade.trim() || suggestRouteLoading}
+            onPress={handleSuggestRoute}
+          >
+            {suggestRouteLoading
+              ? <ActivityIndicator color="#fff" />
+              : <Text style={styles.primaryButtonText}>Submit for review</Text>}
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.changeLink} onPress={() => setStep("routes")}>
+            <Text style={styles.changeLinkText}>← Back to routes</Text>
+          </TouchableOpacity>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    );
+  }
+
   // ── Search step ─────────────────────────────────────────────────────────────
   return (
     <KeyboardAvoidingView
@@ -250,6 +386,9 @@ export default function SubmitScreen() {
           onSelectArea={selectArea}
           onSelectRoute={selectRoute}
         />
+        <TouchableOpacity style={styles.suggestLink} onPress={() => setStep("suggest_area")}>
+          <Text style={styles.suggestLinkText}>Area not listed? Suggest it →</Text>
+        </TouchableOpacity>
       </View>
     </KeyboardAvoidingView>
   );
@@ -443,6 +582,17 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     fontSize: 16,
   },
+  textInput: {
+    borderWidth: 1,
+    borderColor: "#d1d5db",
+    borderRadius: 10,
+    padding: 12,
+    fontSize: 16,
+    backgroundColor: "#fff",
+  },
+  buttonDisabled: { opacity: 0.5 },
+  suggestLink: { alignItems: "center", paddingVertical: 14 },
+  suggestLinkText: { color: "#6b7280", fontSize: 14 },
   preview: {
     width: "100%",
     height: 260,

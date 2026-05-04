@@ -114,6 +114,92 @@ export async function reviewImage(
   }
 }
 
+// ── Suggestions ──────────────────────────────────────────────────────────────
+
+export async function suggestArea(
+  name: string,
+  parentId?: number,
+): Promise<{ id: number }> {
+  const res = await fetch(`${BASE_URL}/suggest/area`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, parent_id: parentId ?? null }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Suggest area failed: ${text}`);
+  }
+  return res.json();
+}
+
+export async function suggestRoute(
+  name: string,
+  grade: string,
+  areaId: number,
+): Promise<{ id: number }> {
+  const res = await fetch(`${BASE_URL}/suggest/route`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, grade, area_id: areaId }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Suggest route failed: ${text}`);
+  }
+  return res.json();
+}
+
+// ── Admin: pending areas / routes ─────────────────────────────────────────────
+
+export interface PendingArea {
+  id: number;
+  name: string;
+  parent_id: number | null;
+  parent_name: string | null;
+  submitted_by: string | null;
+  created_at: string | null;
+}
+
+export interface PendingRoute {
+  id: number;
+  name: string;
+  grade: string;
+  area_id: number;
+  area: string;
+  submitted_by: string | null;
+  created_at: string | null;
+}
+
+export async function getPendingAreas(): Promise<{ count: number; areas: PendingArea[] }> {
+  const res = await fetch(`${BASE_URL}/admin/review/pending/areas`, { headers: adminHeaders() });
+  if (!res.ok) throw new Error("Failed to fetch pending areas");
+  return res.json();
+}
+
+export async function getPendingRoutes(): Promise<{ count: number; routes: PendingRoute[] }> {
+  const res = await fetch(`${BASE_URL}/admin/review/pending/routes`, { headers: adminHeaders() });
+  if (!res.ok) throw new Error("Failed to fetch pending routes");
+  return res.json();
+}
+
+export async function reviewArea(areaId: number, action: "approve" | "reject"): Promise<void> {
+  const res = await fetch(`${BASE_URL}/admin/review/areas/${areaId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...adminHeaders() },
+    body: JSON.stringify({ action }),
+  });
+  if (!res.ok) throw new Error("Area review failed");
+}
+
+export async function reviewRoute(routeId: number, action: "approve" | "reject"): Promise<void> {
+  const res = await fetch(`${BASE_URL}/admin/review/routes/${routeId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...adminHeaders() },
+    body: JSON.stringify({ action }),
+  });
+  if (!res.ok) throw new Error("Route review failed");
+}
+
 export async function submitImage(
   imageUri: string,
   routeId: number,
