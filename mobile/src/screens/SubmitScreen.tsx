@@ -250,13 +250,8 @@ export default function SubmitScreen() {
   // ── Photo step ──────────────────────────────────────────────────────────────
   if (step === "photo" && selectedRoute) {
     return (
-      <KeyboardAvoidingView
-        style={styles.fill}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-      >
+      <View style={styles.fill}>
         <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.container}>
-          <Text style={styles.heading}>Submit a route photo</Text>
-
           <View style={styles.selectedRouteCard}>
             <Text style={styles.selectedRouteName}>{selectedRoute.name}</Text>
             <Text style={styles.selectedRouteMeta}>
@@ -267,6 +262,34 @@ export default function SubmitScreen() {
           <TouchableOpacity onPress={backToRoutes} style={styles.changeLink}>
             <Text style={styles.changeLinkText}>← Change route</Text>
           </TouchableOpacity>
+
+          <Text style={styles.label}>Photos</Text>
+          <View style={styles.photoButtons}>
+            <TouchableOpacity style={styles.secondaryButton} onPress={takePhoto}>
+              <Text style={styles.secondaryButtonText}>Take photo</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.secondaryButton} onPress={pickImage}>
+              <Text style={styles.secondaryButtonText}>
+                {imageUris.length > 0 ? "Add more" : "Choose from library"}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {imageUris.length > 0 && (
+            <View style={styles.thumbnailGrid}>
+              {imageUris.map((uri, i) => (
+                <View key={uri + i} style={styles.thumbnailWrapper}>
+                  <Image source={{ uri }} style={styles.thumbnail} resizeMode="cover" />
+                  <TouchableOpacity
+                    style={styles.thumbnailRemove}
+                    onPress={() => setImageUris((prev) => prev.filter((_, j) => j !== i))}
+                  >
+                    <Text style={styles.thumbnailRemoveText}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </View>
+          )}
 
           <View style={styles.tipsCard}>
             <Text style={styles.tipsTitle}>Photo tips</Text>
@@ -285,42 +308,22 @@ export default function SubmitScreen() {
               </View>
             </View>
           </View>
-
-          <Text style={styles.label}>Photos</Text>
-          <View style={styles.photoButtons}>
-            <TouchableOpacity style={styles.secondaryButton} onPress={takePhoto}>
-              <Text style={styles.secondaryButtonText}>Take photo</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.secondaryButton} onPress={pickImage}>
-              <Text style={styles.secondaryButtonText}>
-                {imageUris.length > 0 ? "Add more photos" : "Choose from library"}
-              </Text>
-            </TouchableOpacity>
-          </View>
-          {imageUris.length > 0 && (
-            <>
-              <View style={styles.thumbnailGrid}>
-                {imageUris.map((uri, i) => (
-                  <View key={uri + i} style={styles.thumbnailWrapper}>
-                    <Image source={{ uri }} style={styles.thumbnail} resizeMode="cover" />
-                    <TouchableOpacity
-                      style={styles.thumbnailRemove}
-                      onPress={() => setImageUris((prev) => prev.filter((_, j) => j !== i))}
-                    >
-                      <Text style={styles.thumbnailRemoveText}>✕</Text>
-                    </TouchableOpacity>
-                  </View>
-                ))}
-              </View>
-              <TouchableOpacity style={styles.primaryButton} onPress={handleSubmit}>
-                <Text style={styles.primaryButtonText}>
-                  Submit {imageUris.length} photo{imageUris.length > 1 ? "s" : ""}
-                </Text>
-              </TouchableOpacity>
-            </>
-          )}
         </ScrollView>
-      </KeyboardAvoidingView>
+
+        <View style={styles.photoFooter}>
+          <TouchableOpacity
+            style={[styles.primaryButton, { flex: 1 }, !imageUris.length && styles.buttonDisabled]}
+            disabled={!imageUris.length}
+            onPress={handleSubmit}
+          >
+            <Text style={styles.primaryButtonText}>
+              {imageUris.length > 0
+                ? `Submit ${imageUris.length} photo${imageUris.length > 1 ? "s" : ""}`
+                : "Select photos above"}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </View>
     );
   }
 
@@ -637,6 +640,13 @@ const styles = StyleSheet.create({
   buttonDisabled: { opacity: 0.5 },
   suggestLink: { alignItems: "center", paddingVertical: 14 },
   suggestLinkText: { color: "#6b7280", fontSize: 14 },
+  photoFooter: {
+    padding: 16,
+    paddingBottom: 32,
+    borderTopWidth: 1,
+    borderTopColor: "#f3f4f6",
+    backgroundColor: "#fff",
+  },
   thumbnailGrid: {
     flexDirection: "row",
     flexWrap: "wrap",
