@@ -251,7 +251,9 @@ export default function SubmitScreen() {
   if (step === "photo" && selectedRoute) {
     return (
       <View style={styles.fill}>
-        <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.container}>
+
+        {/* Route info — always visible at top */}
+        <View style={styles.photoHeader}>
           <View style={styles.selectedRouteCard}>
             <Text style={styles.selectedRouteName}>{selectedRoute.name}</Text>
             <Text style={styles.selectedRouteMeta}>
@@ -262,20 +264,13 @@ export default function SubmitScreen() {
           <TouchableOpacity onPress={backToRoutes} style={styles.changeLink}>
             <Text style={styles.changeLinkText}>← Change route</Text>
           </TouchableOpacity>
+        </View>
 
-          <Text style={styles.label}>Photos</Text>
-          <View style={styles.photoButtons}>
-            <TouchableOpacity style={styles.secondaryButton} onPress={takePhoto}>
-              <Text style={styles.secondaryButtonText}>Take photo</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.secondaryButton} onPress={pickImage}>
-              <Text style={styles.secondaryButtonText}>
-                {imageUris.length > 0 ? "Add more" : "Choose from library"}
-              </Text>
-            </TouchableOpacity>
-          </View>
-
-          {imageUris.length > 0 && (
+        {/* Thumbnails scroll in the middle */}
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.thumbScrollContent}>
+          {imageUris.length === 0 ? (
+            <Text style={styles.noPhotosHint}>No photos selected yet</Text>
+          ) : (
             <View style={styles.thumbnailGrid}>
               {imageUris.map((uri, i) => (
                 <View key={uri + i} style={styles.thumbnailWrapper}>
@@ -290,36 +285,29 @@ export default function SubmitScreen() {
               ))}
             </View>
           )}
-
-          <View style={styles.tipsCard}>
-            <Text style={styles.tipsTitle}>Photo tips</Text>
-            <View style={styles.tipsColumns}>
-              <View style={styles.tipsCol}>
-                <Text style={styles.tipsGood}>✓  Do</Text>
-                <Text style={styles.tipItem}>Shoot at a variety of angles — straight on, from below, or stepped back</Text>
-                <Text style={styles.tipItem}>Show the key features that distinguish this route</Text>
-              </View>
-              <View style={styles.tipsDivider} />
-              <View style={styles.tipsCol}>
-                <Text style={styles.tipsBad}>✕  Don't</Text>
-                <Text style={styles.tipItem}>Include multiple routes in the frame</Text>
-                <Text style={styles.tipItem}>Shoot at an obstructive angle</Text>
-                <Text style={styles.tipItem}>Get too close — the full line should be visible</Text>
-              </View>
-            </View>
-          </View>
         </ScrollView>
 
+        {/* All action buttons pinned at bottom */}
         <View style={styles.photoFooter}>
+          <View style={styles.photoButtons}>
+            <TouchableOpacity style={styles.secondaryButton} onPress={takePhoto}>
+              <Text style={styles.secondaryButtonText}>Take photo</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.secondaryButton} onPress={pickImage}>
+              <Text style={styles.secondaryButtonText}>
+                {imageUris.length > 0 ? "Add more" : "Choose from library"}
+              </Text>
+            </TouchableOpacity>
+          </View>
           <TouchableOpacity
-            style={[styles.primaryButton, { flex: 1 }, !imageUris.length && styles.buttonDisabled]}
+            style={[styles.primaryButton, !imageUris.length && styles.buttonDisabled]}
             disabled={!imageUris.length}
             onPress={handleSubmit}
           >
             <Text style={styles.primaryButtonText}>
               {imageUris.length > 0
                 ? `Submit ${imageUris.length} photo${imageUris.length > 1 ? "s" : ""}`
-                : "Select photos above"}
+                : "Select photos to submit"}
             </Text>
           </TouchableOpacity>
         </View>
@@ -640,9 +628,27 @@ const styles = StyleSheet.create({
   buttonDisabled: { opacity: 0.5 },
   suggestLink: { alignItems: "center", paddingVertical: 14 },
   suggestLinkText: { color: "#6b7280", fontSize: 14 },
+  photoHeader: {
+    padding: 16,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: "#f3f4f6",
+    backgroundColor: "#fff",
+  },
+  thumbScrollContent: {
+    padding: 16,
+    flexGrow: 1,
+  },
+  noPhotosHint: {
+    textAlign: "center",
+    color: "#9ca3af",
+    fontSize: 14,
+    marginTop: 32,
+  },
   photoFooter: {
     padding: 16,
     paddingBottom: 32,
+    gap: 10,
     borderTopWidth: 1,
     borderTopColor: "#f3f4f6",
     backgroundColor: "#fff",
