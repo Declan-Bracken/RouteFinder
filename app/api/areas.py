@@ -11,8 +11,9 @@ def _fmt(slug: str) -> str:
 
 @router.get("/search")
 def unified_search(q: str = Query(..., min_length=2)):
-    q_slug = q.strip().replace(" ", "-")
-    pattern = f"%{q_slug}%"
+    q_stripped = q.strip()
+    slug_pattern = f"%{q_stripped.replace(' ', '-')}%"
+    raw_pattern  = f"%{q_stripped}%"
 
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -20,7 +21,8 @@ def unified_search(q: str = Query(..., min_length=2)):
             cur.execute(
                 """
                 WITH RECURSIVE matching AS (
-                    SELECT id, name, parent_id FROM areas WHERE name ILIKE %s AND status = 'approved'
+                    SELECT id, name, parent_id FROM areas
+                    WHERE (name ILIKE %s OR name ILIKE %s) AND status = 'approved'
                 ),
                 all_descendants AS (
                     SELECT id, id AS root_id, 0 AS depth FROM matching
@@ -41,7 +43,7 @@ def unified_search(q: str = Query(..., min_length=2)):
                 ORDER BY COUNT(DISTINCT r.id) DESC
                 LIMIT 8
                 """,
-                (pattern,),
+                (slug_pattern, raw_pattern),
             )
             area_rows = cur.fetchall()
 
@@ -52,11 +54,11 @@ def unified_search(q: str = Query(..., min_length=2)):
                 FROM routes r
                 JOIN areas a ON a.id = r.area_id
                 LEFT JOIN areas p ON p.id = a.parent_id
-                WHERE r.name ILIKE %s AND r.status = 'approved'
+                WHERE (r.name ILIKE %s OR r.name ILIKE %s) AND r.status = 'approved'
                 ORDER BY r.name
                 LIMIT 10
                 """,
-                (pattern,),
+                (slug_pattern, raw_pattern),
             )
             route_rows = cur.fetchall()
 
