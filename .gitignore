@@ -18,5 +18,8 @@ models/pretrained/
 *.ckpt
 *.zip
 
+# Notebooks (may contain secrets / credentials)
+train/notebooks/
+
 # OS
 .DS_Store
