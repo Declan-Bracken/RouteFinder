@@ -254,7 +254,7 @@ export default function SubmitScreen() {
         style={styles.fill}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        <ScrollView contentContainerStyle={styles.container}>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.container}>
           <Text style={styles.heading}>Submit a route photo</Text>
 
           <View style={styles.selectedRouteCard}>
@@ -326,7 +326,7 @@ export default function SubmitScreen() {
   if (step === "suggest_area") {
     return (
       <KeyboardAvoidingView style={styles.fill} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-        <ScrollView contentContainerStyle={styles.container}>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.container}>
           <Text style={styles.heading}>Suggest a new area</Text>
           <Text style={styles.label}>Area name</Text>
           <TextInput
@@ -371,7 +371,7 @@ export default function SubmitScreen() {
   if (step === "suggest_route") {
     return (
       <KeyboardAvoidingView style={styles.fill} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-        <ScrollView contentContainerStyle={styles.container}>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.container}>
           <Text style={styles.heading}>Suggest a new route</Text>
           {selectedArea && (
             <View style={styles.selectedRouteCard}>
