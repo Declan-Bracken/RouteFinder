@@ -49,9 +49,10 @@ export default function SubmitScreen() {
   const [suggestAreaLoading, setSuggestAreaLoading] = useState(false);
 
   // Suggest route state
-  const [suggestRouteName, setSuggestRouteName]   = useState("");
-  const [suggestRouteGrade, setSuggestRouteGrade] = useState("");
+  const [suggestRouteName, setSuggestRouteName]       = useState("");
+  const [suggestRouteGrade, setSuggestRouteGrade]     = useState("");
   const [suggestRouteLoading, setSuggestRouteLoading] = useState(false);
+  const [suggestRouteSuccess, setSuggestRouteSuccess] = useState("");
 
   const selectArea = useCallback(async (area: AreaResult) => {
     setSelectedArea(area);
@@ -171,9 +172,9 @@ export default function SubmitScreen() {
     setSuggestRouteLoading(true);
     try {
       await suggestRoute(suggestRouteName.trim(), suggestRouteGrade.trim(), selectedArea.id);
-      Alert.alert("Submitted!", "Your route suggestion will appear after review.");
-      setSuggestRouteName(""); setSuggestRouteGrade("");
-      setStep("routes");
+      setSuggestRouteSuccess(`"${suggestRouteName.trim()}" submitted!`);
+      setSuggestRouteName("");
+      setSuggestRouteGrade("");
     } catch (e: any) {
       Alert.alert("Error", e.message);
     } finally {
@@ -238,9 +239,6 @@ export default function SubmitScreen() {
                 <Text style={styles.routeGrade}>{r.grade}</Text>
               </TouchableOpacity>
             ))}
-            <TouchableOpacity style={styles.suggestLink} onPress={() => setStep("suggest_route")}>
-              <Text style={styles.suggestLinkText}>Route not listed? Suggest it →</Text>
-            </TouchableOpacity>
           </ScrollView>
         )}
       </View>
@@ -361,17 +359,38 @@ export default function SubmitScreen() {
       <KeyboardAvoidingView style={styles.fill} behavior={Platform.OS === "ios" ? "padding" : undefined}>
         <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.container}>
           <Text style={styles.heading}>Suggest a new route</Text>
-          {selectedArea && (
+          {suggestRouteSuccess ? (
+            <View style={styles.successBanner}>
+              <Text style={styles.successText}>✓ {suggestRouteSuccess}</Text>
+              <Text style={styles.successSub}>Add another route below</Text>
+            </View>
+          ) : null}
+          {selectedArea ? (
             <View style={styles.selectedRouteCard}>
               <Text style={styles.selectedRouteName}>{selectedArea.name}</Text>
             </View>
+          ) : (
+            <>
+              <Text style={styles.label}>Area</Text>
+              <AreaRouteSearch
+                value={suggestParentQuery}
+                onChangeText={setSuggestParentQuery}
+                placeholder="Search for the area this route is in…"
+                showRoutes={false}
+                onSelectArea={(area) => {
+                  setSelectedArea(area);
+                  setSuggestParentQuery(area.name);
+                }}
+                onSelectRoute={() => {}}
+              />
+            </>
           )}
           <Text style={[styles.label, { marginTop: 16 }]}>Route name</Text>
           <TextInput
             style={styles.textInput}
             placeholder="e.g. Crack Attack"
             value={suggestRouteName}
-            onChangeText={setSuggestRouteName}
+            onChangeText={(t) => { setSuggestRouteName(t); setSuggestRouteSuccess(""); }}
             autoFocus
           />
           <Text style={[styles.label, { marginTop: 16 }]}>Grade</Text>
@@ -391,8 +410,8 @@ export default function SubmitScreen() {
               ? <ActivityIndicator color="#fff" />
               : <Text style={styles.primaryButtonText}>Submit for review</Text>}
           </TouchableOpacity>
-          <TouchableOpacity style={styles.changeLink} onPress={() => setStep("routes")}>
-            <Text style={styles.changeLinkText}>← Back to routes</Text>
+          <TouchableOpacity style={styles.changeLink} onPress={() => setStep("search")}>
+            <Text style={styles.changeLinkText}>← Back to search</Text>
           </TouchableOpacity>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -418,6 +437,9 @@ export default function SubmitScreen() {
         />
         <TouchableOpacity style={styles.suggestLink} onPress={() => setStep("suggest_area")}>
           <Text style={styles.suggestLinkText}>Area not listed? Suggest it →</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.suggestLink} onPress={() => setStep("suggest_route")}>
+          <Text style={styles.suggestLinkText}>Route not listed? Suggest it →</Text>
         </TouchableOpacity>
       </View>
     </KeyboardAvoidingView>
@@ -612,6 +634,16 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     fontSize: 16,
   },
+  successBanner: {
+    backgroundColor: "#f0fdf4",
+    borderWidth: 1,
+    borderColor: "#16a34a",
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 12,
+  },
+  successText: { fontSize: 15, fontWeight: "600", color: "#16a34a" },
+  successSub: { fontSize: 13, color: "#6b7280", marginTop: 2 },
   textInput: {
     borderWidth: 1,
     borderColor: "#d1d5db",
