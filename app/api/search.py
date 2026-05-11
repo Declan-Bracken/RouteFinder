@@ -41,48 +41,62 @@ def search(
                     WITH RECURSIVE sub_areas AS (
                         SELECT id FROM areas WHERE id = %s
                         UNION ALL
-                        SELECT a.id FROM areas a
-                        JOIN sub_areas s ON a.parent_id = s.id
+                        SELECT a.id FROM areas a JOIN sub_areas s ON a.parent_id = s.id
+                    ),
+                    combined AS (
+                        SELECT r.id, r.name, r.grade, r.url, a.name AS area_name,
+                               1 - (e.embedding <=> %s::vector) AS similarity
+                        FROM image_embeddings e
+                        JOIN images i ON i.id = e.image_id
+                        JOIN routes r ON r.id = i.route_id
+                        JOIN areas  a ON a.id = r.area_id
+                        WHERE e.model_version = %s AND i.status = 'approved'
+                          AND r.area_id IN (SELECT id FROM sub_areas)
+                        UNION ALL
+                        SELECT r.id, r.name, r.grade, r.url, a.name AS area_name,
+                               1 - (e.embedding <=> %s::vector) AS similarity
+                        FROM route_image_embeddings e
+                        JOIN route_images ri ON ri.id = e.route_image_id
+                        JOIN routes       r  ON r.id  = ri.route_id
+                        JOIN areas        a  ON a.id  = r.area_id
+                        WHERE e.model_version = %s AND r.status = 'approved'
+                          AND r.area_id IN (SELECT id FROM sub_areas)
                     )
-                    SELECT
-                        r.id,
-                        r.name,
-                        r.grade,
-                        r.url,
-                        a.name          AS area_name,
-                        1 - (e.embedding <=> %s::vector) AS similarity
-                    FROM image_embeddings e
-                    JOIN images  i ON i.id       = e.image_id
-                    JOIN routes  r ON r.id       = i.route_id
-                    JOIN areas   a ON a.id       = r.area_id
-                    WHERE e.model_version = %s
-                      AND i.status = 'approved'
-                      AND r.area_id IN (SELECT id FROM sub_areas)
-                    ORDER BY e.embedding <=> %s::vector
+                    SELECT id, name, grade, url, area_name, MAX(similarity) AS similarity
+                    FROM combined
+                    GROUP BY id, name, grade, url, area_name
+                    ORDER BY similarity DESC
                     LIMIT %s
                     """,
-                    (area_id, vec_str, model_version, vec_str, top_k),
+                    (area_id, vec_str, model_version, vec_str, model_version, top_k),
                 )
             else:
                 cur.execute(
                     """
-                    SELECT
-                        r.id,
-                        r.name,
-                        r.grade,
-                        r.url,
-                        a.name          AS area_name,
-                        1 - (e.embedding <=> %s::vector) AS similarity
-                    FROM image_embeddings e
-                    JOIN images  i ON i.id       = e.image_id
-                    JOIN routes  r ON r.id       = i.route_id
-                    JOIN areas   a ON a.id       = r.area_id
-                    WHERE e.model_version = %s
-                      AND i.status = 'approved'
-                    ORDER BY e.embedding <=> %s::vector
+                    WITH combined AS (
+                        SELECT r.id, r.name, r.grade, r.url, a.name AS area_name,
+                               1 - (e.embedding <=> %s::vector) AS similarity
+                        FROM image_embeddings e
+                        JOIN images i ON i.id = e.image_id
+                        JOIN routes r ON r.id = i.route_id
+                        JOIN areas  a ON a.id = r.area_id
+                        WHERE e.model_version = %s AND i.status = 'approved'
+                        UNION ALL
+                        SELECT r.id, r.name, r.grade, r.url, a.name AS area_name,
+                               1 - (e.embedding <=> %s::vector) AS similarity
+                        FROM route_image_embeddings e
+                        JOIN route_images ri ON ri.id = e.route_image_id
+                        JOIN routes       r  ON r.id  = ri.route_id
+                        JOIN areas        a  ON a.id  = r.area_id
+                        WHERE e.model_version = %s AND r.status = 'approved'
+                    )
+                    SELECT id, name, grade, url, area_name, MAX(similarity) AS similarity
+                    FROM combined
+                    GROUP BY id, name, grade, url, area_name
+                    ORDER BY similarity DESC
                     LIMIT %s
                     """,
-                    (vec_str, model_version, vec_str, top_k),
+                    (vec_str, model_version, vec_str, model_version, top_k),
                 )
             rows = cur.fetchall()
 
