@@ -11,11 +11,17 @@ build/
 
 # Data — large files and ephemeral cache
 data/cache/
+data/clip_filter_cache/
 data/trees/mountain_project_tree.json.gz
+data/test_images/
+data/clip_filter_viz.html
+data/clip_validation_results.csv
 
 # Model checkpoints
 models/pretrained/
+models/clip_filter/
 *.ckpt
+*.pth
 *.zip
 
 # Notebooks (may contain secrets / credentials)
