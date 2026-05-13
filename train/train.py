@@ -37,13 +37,15 @@ from datasets import load_dataset
 import timm
 from pytorch_metric_learning.losses import SupConLoss
 
+from train.samplers import create_split, MultiRouteBatchSampler, HardNegativeBatchSampler
+from train.datasets import supcon_collate, SupConDataset, EvalDataset
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
 @dataclass
 class Config:
     # Data
-    hf_dataset: str = "DeclanBracken/RouteFinderDatasetV2"
+    hf_dataset: str = "DeclanBracken/RouteFinderDatasetV3"
     hf_token: str = None            # or set HF_TOKEN env var
 
     # Model
@@ -65,8 +67,9 @@ class Config:
     precision: int = 16
 
     # Eval
-    recall_every_n_epochs: int = 1  # every epoch — val set is small so overhead is negligible
-    test_split: float = 0.2         # fraction of routes held out for validation
+    recall_every_n_epochs: int = 1  # every epoch
+    train_split: float = 0.8        # fraction of images to use for training
+    val_split: float = 0.1          # fraction of images to use for validation
 
     # Local image directory (set when training from B2-downloaded images)
     # If set, image_dir + manifest_path are used instead of hf_dataset
@@ -77,190 +80,6 @@ class Config:
     # I/O
     num_workers: int = 4
     checkpoint_dir: str = "checkpoints"
-
-
-# ── Augmentations ─────────────────────────────────────────────────────────────
-#
-# Key domain gap between MP photos and real field captures:
-#   - Phone held at any angle          → RandomPerspective + RandomRotation
-#   - Variable distance from wall      → RandomResizedCrop (wide scale range)
-#   - Outdoor lighting changes         → ColorJitter + RandomGrayscale
-#   - Hand movement / focus blur       → GaussianBlur
-
-TRAIN_TRANSFORM = T.Compose([
-    T.Resize(256),
-    T.RandomResizedCrop(224, scale=(0.5, 1.0)),
-    T.RandomHorizontalFlip(),
-    T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.05),
-    T.RandomGrayscale(p=0.1),
-    T.GaussianBlur(kernel_size=3, sigma=(0.1, 1.5)),
-    T.RandomPerspective(distortion_scale=0.3, p=0.5),
-    T.RandomRotation(15),
-    T.ToTensor(),
-    T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-])
-
-EVAL_TRANSFORM = T.Compose([
-    T.Resize(256),
-    T.CenterCrop(224),
-    T.ToTensor(),
-    T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-])
-
-
-# ── Datasets ──────────────────────────────────────────────────────────────────
-
-class SupConDataset(Dataset):
-    """
-    Returns n_views independently augmented views per image, stacked as (n_views, C, H, W).
-    With only ~573 fine-tuning images, multiple views per image are the primary way
-    to increase the number of positive pairs the loss sees per epoch.
-    """
-    def __init__(self, hf_dataset, n_views=2):
-        self.ds = hf_dataset
-        self.n_views = n_views
-
-    def __len__(self):
-        return len(self.ds)
-
-    def __getitem__(self, idx):
-        sample = self.ds[idx]
-        img = sample["image"].convert("RGB")
-        views = torch.stack([TRAIN_TRANSFORM(img) for _ in range(self.n_views)])
-        return views, torch.tensor(sample["label"], dtype=torch.long)
-
-
-class EvalDataset(Dataset):
-    def __init__(self, hf_dataset):
-        self.ds = hf_dataset
-
-    def __len__(self):
-        return len(self.ds)
-
-    def __getitem__(self, idx):
-        sample = self.ds[idx]
-        return EVAL_TRANSFORM(sample["image"].convert("RGB")), sample["label"]
-
-
-def group_by_label(hf_dataset):
-    """Returns list-of-lists: each inner list holds the indices of one route."""
-    groups = defaultdict(list)
-    for i, sample in enumerate(hf_dataset):
-        groups[sample["label"]].append(i)
-    return list(groups.values())
-
-
-class MultiRouteBatchSampler(BatchSampler):
-    """
-    Packs several complete routes into each batch. SupCon requires multiple
-    samples per class within a batch — without this, most anchors have no
-    positives and the loss is meaningless.
-    """
-    def __init__(self, route_groups, max_batch_size, shuffle=True):
-        self.groups = route_groups
-        self.max_batch_size = max_batch_size
-        self.shuffle = shuffle
-
-    def __iter__(self):
-        groups = list(self.groups)
-        if self.shuffle:
-            random.shuffle(groups)
-        batch, batch_len = [], 0
-        for group in groups:
-            if batch_len + len(group) > self.max_batch_size and batch:
-                yield batch
-                batch, batch_len = [], 0
-            batch.extend(group)
-            batch_len += len(group)
-        if batch:
-            yield batch
-
-    def __len__(self):
-        total = sum(len(g) for g in self.groups)
-        return max(1, (total + self.max_batch_size - 1) // self.max_batch_size)
-
-
-class AreaAwareBatchSampler(BatchSampler):
-    """
-    Hard negative sampler: packs routes from the same area into each batch.
-    Routes from the same crag share rock type, color, and vegetation — forcing
-    the model to learn fine-grained discriminative features rather than easy
-    cross-crag differences.
-    """
-    def __init__(self, area_route_groups: dict, max_batch_size: int, shuffle: bool = True):
-        # area_route_groups: {area_id: [[indices_route1], [indices_route2], ...]}
-        self.area_route_groups = area_route_groups
-        self.max_batch_size = max_batch_size
-        self.shuffle = shuffle
-
-    def __iter__(self):
-        areas = list(self.area_route_groups.values())
-        if self.shuffle:
-            random.shuffle(areas)
-        for route_groups in areas:
-            groups = list(route_groups)
-            if self.shuffle:
-                random.shuffle(groups)
-            batch, batch_len = [], 0
-            for group in groups:
-                if batch_len + len(group) > self.max_batch_size and batch:
-                    yield batch
-                    batch, batch_len = [], 0
-                batch.extend(group)
-                batch_len += len(group)
-            if batch:
-                yield batch
-
-    def __len__(self):
-        total = sum(sum(len(g) for g in groups) for groups in self.area_route_groups.values())
-        return max(1, (total + self.max_batch_size - 1) // self.max_batch_size)
-
-
-class LocalImageDataset(Dataset):
-    """Dataset that reads images from a local directory using a manifest DataFrame."""
-    def __init__(self, manifest: pd.DataFrame, image_dir: str, n_views: int = 2):
-        self.manifest = manifest.reset_index(drop=True)
-        self.image_dir = image_dir
-        self.n_views = n_views
-
-    def __len__(self):
-        return len(self.manifest)
-
-    def __getitem__(self, idx):
-        row = self.manifest.iloc[idx]
-        img = Image.open(os.path.join(self.image_dir, f"{row['image_id']}.jpg")).convert("RGB")
-        views = torch.stack([TRAIN_TRANSFORM(img) for _ in range(self.n_views)])
-        return views, torch.tensor(int(row["label"]), dtype=torch.long)
-
-
-class LocalEvalDataset(Dataset):
-    def __init__(self, manifest: pd.DataFrame, image_dir: str):
-        self.manifest = manifest.reset_index(drop=True)
-        self.image_dir = image_dir
-
-    def __len__(self):
-        return len(self.manifest)
-
-    def __getitem__(self, idx):
-        row = self.manifest.iloc[idx]
-        img = Image.open(os.path.join(self.image_dir, f"{row['image_id']}.jpg")).convert("RGB")
-        return EVAL_TRANSFORM(img), int(row["label"])
-
-
-def group_by_area_and_route(manifest: pd.DataFrame) -> dict:
-    """Returns {area_id: [[indices_route1], [indices_route2], ...]} for AreaAwareBatchSampler."""
-    area_route = defaultdict(lambda: defaultdict(list))
-    for idx, row in manifest.iterrows():
-        area_route[row["area_id"]][row["route_id"]].append(idx)
-    return {
-        area_id: list(route_dict.values())
-        for area_id, route_dict in area_route.items()
-    }
-
-
-def supcon_collate(batch):
-    views, labels = zip(*batch)
-    return torch.stack(views), torch.stack(labels)
 
 
 # ── Model ─────────────────────────────────────────────────────────────────────
@@ -294,6 +113,9 @@ class RouteFinderModel(pl.LightningModule):
                  weight_decay=1e-4, warmup_epochs=5, num_unfrozen_blocks=0,
                  backbone_name="vit_small_patch14_dinov2.lvd142m"):
         super().__init__()
+        self.warmup_epochs = warmup_epochs
+        self.lr = lr
+        self.weight_decay = weight_decay
         self.save_hyperparameters()
 
         self.backbone = timm.create_model(
@@ -340,13 +162,12 @@ class RouteFinderModel(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, _):
-        loss = self._shared_step(batch)
-        self.log("val_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
+        pass
 
     def configure_optimizers(self):
         params = filter(lambda p: p.requires_grad, self.parameters())
-        opt = torch.optim.AdamW(params, lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
-        sched = _make_lr_scheduler(opt, self.hparams.warmup_epochs, self.trainer.max_epochs)
+        opt = torch.optim.AdamW(params, lr=self.lr, weight_decay=self.weight_decay)
+        sched = _make_lr_scheduler(opt, self.warmup_epochs, self.trainer.max_epochs)
         return [opt], [{"scheduler": sched, "interval": "epoch"}]
 
 
@@ -355,125 +176,123 @@ class RouteFinderModel(pl.LightningModule):
 class RecallAtKCallback(pl.Callback):
     """
     Computes Recall@K on the held-out val split every N epochs.
-    This is the metric that actually matters — not contrastive loss,
-    which is an indirect proxy and hard to interpret across runs.
     """
-    def __init__(self, val_hf_dataset, every_n_epochs=5, ks=(1, 3, 5)):
-        self.val_ds = val_hf_dataset
+    def __init__(self, loader, every_n_epochs=5, ks=(1, 3, 5)):
         self.every_n_epochs = every_n_epochs
         self.ks = ks
+        self.loader = loader
 
     @torch.no_grad()
     def on_validation_epoch_end(self, trainer, pl_module):
         if (trainer.current_epoch + 1) % self.every_n_epochs != 0:
             return
 
-        # num_workers=0 avoids spawning subprocesses that re-trigger this callback
-        loader = DataLoader(EvalDataset(self.val_ds), batch_size=64, num_workers=0)
         device = next(pl_module.parameters()).device
         pl_module.eval()
 
         embeddings, labels = [], []
-        for imgs, lbls in loader:
+        for imgs, lbls in self.loader:
             embeddings.append(pl_module(imgs.to(device)).cpu())
             labels.extend(lbls.tolist() if hasattr(lbls, "tolist") else lbls)
 
-        emb = torch.cat(embeddings).numpy()
+        emb = torch.cat(embeddings)
         knn = NearestNeighbors(n_neighbors=max(self.ks) + 1, metric="cosine")
-        knn.fit(emb)
-        _, indices = knn.kneighbors(emb)
+        knn.fit(emb.numpy())
+        _, indices = knn.kneighbors(emb.numpy())
+
+        # Recall@K and MRR in one pass
+        max_k = max(self.ks)
+        recall_hits = {k: 0 for k in self.ks}
+        mrr = 0.0
+        for i in range(len(labels)):
+            neighbors = [labels[j] for j in indices[i][1:max_k + 1]]
+            for k in self.ks:
+                if labels[i] in neighbors[:k]:
+                    recall_hits[k] += 1
+            for rank, label in enumerate(neighbors, start=1):
+                if label == labels[i]:
+                    mrr += 1.0 / rank
+                    break
 
         for k in self.ks:
-            hits = sum(
-                labels[i] in [labels[j] for j in indices[i][1:k + 1]]
-                for i in range(len(labels))
-            )
-            recall = hits / len(labels)
-            pl_module.log(f"val_recall@{k}", recall, prog_bar=(k == 1))
+            pl_module.log(f"val_recall@{k}", recall_hits[k] / len(labels), prog_bar=(k == 1))
+        pl_module.log("val_mrr", mrr / len(labels))
+
+        # Alignment: mean squared L2 distance between same-route pairs
+        # Lower = tighter positive clusters
+        route_embs = defaultdict(list)
+        for i, label in enumerate(labels):
+            route_embs[label].append(i)
+
+        align_vals = []
+        for idxs in route_embs.values():
+            if len(idxs) < 2:
+                continue
+            e = emb[idxs]
+            sq_dist = 2 - 2 * (e @ e.T)  # ||a-b||^2 = 2 - 2cos for unit vectors
+            mask = torch.triu(torch.ones(len(idxs), len(idxs)), diagonal=1).bool()
+            align_vals.append(sq_dist[mask].mean().item())
+        pl_module.log("val_alignment", sum(align_vals) / len(align_vals) if align_vals else 0.0)
+
+        # Uniformity: log mean exp(-2||a-b||^2) over random pairs
+        # More negative = more uniform spread across hypersphere
+        sample = emb if len(emb) <= 2000 else emb[torch.randperm(len(emb))[:2000]]
+        sq_dists = torch.cdist(sample, sample).pow(2)
+        mask = torch.triu(torch.ones(len(sample), len(sample)), diagonal=1).bool()
+        pl_module.log("val_uniformity", sq_dists[mask].mul(-2).exp().mean().log().item())
 
 
 # ── Training ──────────────────────────────────────────────────────────────────
 
-def _group_by_label_df(df: pd.DataFrame) -> list:
-    """group_by_label equivalent for manifest DataFrames."""
-    groups = defaultdict(list)
-    for i, row in df.iterrows():
-        groups[int(row["label"])].append(i)
-    return list(groups.values())
+ 
+def _build_loaders(cfg):
 
-
-def _build_loaders(cfg: Config):
     """Returns (train_loader, val_loader, val_eval_ds)."""
     samples_per_batch = max(1, cfg.batch_size // cfg.n_views)
 
-    if cfg.image_dir and cfg.manifest_path:
-        manifest = pd.read_csv(cfg.manifest_path)
-        all_routes = manifest["route_id"].unique().tolist()
-        random.seed(42)
-        n_test = max(1, int(len(all_routes) * cfg.test_split))
-        test_routes = set(random.sample(all_routes, n_test))
+    token = cfg.hf_token or os.environ.get("HF_TOKEN")
+    ds = load_dataset(cfg.hf_dataset, token=token)
 
-        train_df = manifest[~manifest["route_id"].isin(test_routes)].reset_index(drop=True)
-        val_df   = manifest[manifest["route_id"].isin(test_routes)].reset_index(drop=True)
+    train_split, val_split, test_split = create_split(ds["train"], cfg.train_split, cfg.val_split)
+    print(f"Images — train: {len(train_split)}  val: {len(val_split)} test: {len(test_split)}")
+    
+    # Random cross-area route sampling
+    train_loader = DataLoader(
+        SupConDataset(train_split, n_views=cfg.n_views),
+        batch_sampler=MultiRouteBatchSampler(train_split, samples_per_batch),
+        collate_fn=supcon_collate, num_workers=cfg.num_workers, pin_memory=True,
+    )
 
-        print(f"Routes — train: {len(all_routes) - n_test}  val: {n_test}")
-        print(f"Images — train: {len(train_df)}  val: {len(val_df)}")
+    # Same construction, but with hard negative sampler
+    train_loader_hard = DataLoader(
+        SupConDataset(train_split, n_views=cfg.n_views),
+        batch_sampler=HardNegativeBatchSampler(train_split, samples_per_batch),
+        collate_fn=supcon_collate, num_workers=cfg.num_workers, pin_memory=True,
+    )
 
-        train_sampler = (
-            AreaAwareBatchSampler(group_by_area_and_route(train_df), samples_per_batch)
-            if cfg.use_area_sampler
-            else MultiRouteBatchSampler(_group_by_label_df(train_df), samples_per_batch)
-        )
-        train_loader = DataLoader(
-            LocalImageDataset(train_df, cfg.image_dir, n_views=cfg.n_views),
-            batch_sampler=train_sampler,
-            collate_fn=supcon_collate, num_workers=cfg.num_workers, pin_memory=True,
-        )
-        val_loader = DataLoader(
-            LocalImageDataset(val_df, cfg.image_dir, n_views=cfg.n_views),
-            batch_sampler=MultiRouteBatchSampler(
-                _group_by_label_df(val_df), samples_per_batch, shuffle=False
-            ),
-            collate_fn=supcon_collate, num_workers=cfg.num_workers, pin_memory=True,
-        )
-        val_eval_ds = LocalEvalDataset(val_df, cfg.image_dir)
+    val_loader = DataLoader(
+        EvalDataset(val_split),
+        batch_sampler=HardNegativeBatchSampler(
+            val_split, cfg.batch_size, shuffle=False
+        ),
+        num_workers=cfg.num_workers, pin_memory=True,
+    )
 
-    else:
-        token = cfg.hf_token or os.environ.get("HF_TOKEN")
-        ds = load_dataset(cfg.hf_dataset, token=token)
+    test_loader = DataLoader(
+        EvalDataset(test_split),
+        batch_sampler=HardNegativeBatchSampler(
+            test_split, cfg.batch_size, shuffle=False
+        ),
+    )
 
-        all_routes = list(set(ds["train"]["label"]))
-        random.seed(42)
-        n_test = max(1, int(len(all_routes) * cfg.test_split))
-        test_routes = set(random.sample(all_routes, n_test))
-        train_split = ds["train"].filter(lambda x: x["label"] not in test_routes)
-        val_split   = ds["train"].filter(lambda x: x["label"] in test_routes)
-
-        print(f"Routes — train: {len(all_routes) - n_test}  val: {n_test}")
-        print(f"Images — train: {len(train_split)}  val: {len(val_split)}")
-
-        train_loader = DataLoader(
-            SupConDataset(train_split, n_views=cfg.n_views),
-            batch_sampler=MultiRouteBatchSampler(group_by_label(train_split), samples_per_batch),
-            collate_fn=supcon_collate, num_workers=cfg.num_workers, pin_memory=True,
-        )
-        val_loader = DataLoader(
-            SupConDataset(val_split, n_views=cfg.n_views),
-            batch_sampler=MultiRouteBatchSampler(
-                group_by_label(val_split), samples_per_batch, shuffle=False
-            ),
-            collate_fn=supcon_collate, num_workers=cfg.num_workers, pin_memory=True,
-        )
-        val_eval_ds = EvalDataset(val_split)
-
-    return train_loader, val_loader, val_eval_ds
+    return train_loader, train_loader_hard, val_loader, test_loader
 
 
 def train(cfg: Config = None):
     if cfg is None:
         cfg = Config()
 
-    train_loader, val_loader, val_eval_ds = _build_loaders(cfg)
+    train_loader, train_loader_hard, val_loader, test_loader = _build_loaders(cfg)
 
     model = RouteFinderModel(
         embed_dim=cfg.embed_dim, proj_dim=cfg.proj_dim, lr=cfg.lr,
@@ -496,14 +315,14 @@ def train(cfg: Config = None):
         callbacks=[
             ckpt_cb,
             LearningRateMonitor("epoch"),
-            RecallAtKCallback(val_eval_ds, every_n_epochs=cfg.recall_every_n_epochs),
+            RecallAtKCallback(val_loader, every_n_epochs=cfg.recall_every_n_epochs),
             EarlyStopping("val_recall@1", patience=cfg.patience, mode="max", strict=False),
         ],
     )
     trainer.fit(model, train_loader, val_loader)
     metrics_csv = os.path.join(cfg.checkpoint_dir, "metrics.csv")
     print(f"\nBest checkpoint: {ckpt_cb.best_model_path}")
-    return ckpt_cb.best_model_path, metrics_csv
+    return ckpt_cb.best_model_path, metrics_csv, test_loader
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "routefinder"
@@ -22,6 +22,8 @@ dependencies = [
     "pandas",
     "tqdm",
     "psycopg2-binary",
+    "open-clip-torch",
+    "python-dotenv",
 ]
 
 [project.optional-dependencies]
@@ -30,4 +32,4 @@ dev = ["streamlit", "matplotlib", "seaborn", "ipykernel"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["routefinder*"]
+include = ["routefinder*", "clip_filter*", "train*"]
