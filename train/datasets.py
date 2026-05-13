@@ -1,3 +1,4 @@
+import io
 from torch.utils.data import Dataset
 from PIL import Image
 import torchvision.transforms as T
@@ -27,6 +28,13 @@ EVAL_TRANSFORM = T.Compose([
 ])
 
 
+def _to_pil(img_field) -> Image.Image:
+    """HF datasets may return image column as raw bytes dict or a PIL Image."""
+    if isinstance(img_field, dict):
+        return Image.open(io.BytesIO(img_field["bytes"])).convert("RGB")
+    return img_field.convert("RGB")
+
+
 # ── Datasets ──────────────────────────────────────────────────────────────────
 
 class SupConDataset(Dataset):
@@ -42,7 +50,7 @@ class SupConDataset(Dataset):
 
     def __getitem__(self, idx):
         sample = self.ds[idx]
-        img = sample["image"].convert("RGB")
+        img = _to_pil(sample["image"])
         views = torch.stack([TRAIN_TRANSFORM(img) for _ in range(self.n_views)])
         return views, torch.tensor(sample["route_id"], dtype=torch.long)
 
@@ -56,7 +64,7 @@ class EvalDataset(Dataset):
 
     def __getitem__(self, idx):
         sample = self.ds[idx]
-        return EVAL_TRANSFORM(sample["image"].convert("RGB")), sample["route_id"]
+        return EVAL_TRANSFORM(_to_pil(sample["image"])), sample["route_id"]
 
 
 # ── B2 Datasets ────────────────────────────────────────────────────────────────────

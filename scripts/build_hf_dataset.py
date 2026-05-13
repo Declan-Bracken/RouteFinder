@@ -33,7 +33,7 @@ from tqdm import tqdm
 from dotenv import load_dotenv
 
 import tempfile
-from datasets import Dataset
+from datasets import Dataset, Features, Value, Image as HFImage
 from huggingface_hub import HfApi
 
 load_dotenv()
@@ -74,9 +74,28 @@ def ensure_repo(hf_repo, hf_token):
     api.create_repo(hf_repo, repo_type="dataset", exist_ok=True, private=True)
 
 
+_FEATURES = Features({
+    "image":                HFImage(),
+    "route_image_id":       Value("int32"),
+    "route_id":             Value("int32"),
+    "route_name":           Value("string"),
+    "grade":                Value("string"),
+    "type":                 Value("string"),
+    "description":          Value("string"),
+    "location":             Value("string"),
+    "gps":                  Value("string"),
+    "area_id":              Value("int32"),
+    "area_name":            Value("string"),
+    "area_path":            Value("string"),
+    "area_depth":           Value("int32"),
+    "filter_score":         Value("float32"),
+    "filter_model_version": Value("string"),
+})
+
+
 def push_shard(records, hf_repo, hf_token, shard_idx):
     api = HfApi(token=hf_token)
-    shard = Dataset.from_list(records)
+    shard = Dataset.from_list(records, features=_FEATURES)
     with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as f:
         shard.to_parquet(f.name)
         api.upload_file(
