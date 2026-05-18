@@ -214,9 +214,12 @@ class RecallAtKCallback(pl.Callback):
                     mrr += 1.0 / rank
                     break
 
-        for k in self.ks:
-            pl_module.log(f"val_recall@{k}", recall_hits[k] / len(labels), prog_bar=(k == 1))
-        pl_module.log("val_mrr", mrr / len(labels))
+        metrics = {f"val_recall@{k}": recall_hits[k] / len(labels) for k in self.ks}
+        metrics["val_mrr"] = mrr / len(labels)
+
+        for key, val in metrics.items():
+            pl_module.log(key, val, prog_bar=(key == "val_recall@1"))
+        trainer.callback_metrics.update({k: torch.tensor(v) for k, v in metrics.items()})
 
         # Alignment: mean squared L2 distance between same-route pairs
         # Lower = tighter positive clusters
