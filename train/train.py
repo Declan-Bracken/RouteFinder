@@ -322,7 +322,7 @@ def train(cfg: Config = None):
             EarlyStopping("val_recall@1", patience=cfg.patience, mode="max", strict=False),
         ],
     )
-    trainer.fit(model, train_loader, val_loader)
+    trainer.fit(model, train_loader_hard, val_loader)
     metrics_csv = os.path.join(cfg.checkpoint_dir, "metrics.csv")
     print(f"\nBest checkpoint: {ckpt_cb.best_model_path}")
     return ckpt_cb.best_model_path, metrics_csv, test_loader
