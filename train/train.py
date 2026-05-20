@@ -16,23 +16,17 @@ On Kaggle:
 """
 
 import os
-import random
 import argparse
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from collections import defaultdict
-from pathlib import Path
 
-import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader, BatchSampler
-from PIL import Image
-import torchvision.transforms as T
+from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
 from pytorch_lightning.loggers import CSVLogger
-from sklearn.neighbors import NearestNeighbors
 from datasets import load_dataset
 import timm
 from pytorch_metric_learning.losses import SupConLoss
@@ -60,7 +54,8 @@ class Config:
     lr: float = 1e-3                # higher LR is fine — only the small proj head is being trained
     temperature: float = 0.07
     weight_decay: float = 1e-4
-    max_epochs: int = 100
+    stage1_epochs: int = 20         # Stage 1: random batches (easy negatives)
+    stage2_epochs: int = 80         # Stage 2: proximity batches (hard negatives)
     warmup_epochs: int = 5
     patience: int = 15
     gradient_clip: float = 1.0
@@ -70,12 +65,13 @@ class Config:
     recall_every_n_epochs: int = 1  # every epoch
     train_split: float = 0.8        # fraction of images to use for training
     val_split: float = 0.1          # fraction of images to use for validation
+    val1_batch_size: int = 0        # Stage 1 val gallery size (0 = use batch_size)
+    val2_batch_size: int = 0        # Stage 2 val gallery size (0 = use batch_size)
 
     # Local image directory (set when training from B2-downloaded images)
     # If set, image_dir + manifest_path are used instead of hf_dataset
     image_dir: str = ""
     manifest_path: str = ""           # CSV with image_id, route_id, area_id, b2_key, label
-    use_area_sampler: bool = True     # area-aware hard negative sampling
 
     # I/O
     num_workers: int = 4
@@ -162,7 +158,8 @@ class RouteFinderModel(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, _):
-        pass
+        imgs, labels = batch
+        return {"emb": self(imgs).detach(), "labels": labels}
 
     def configure_optimizers(self):
         params = filter(lambda p: p.requires_grad, self.parameters())
@@ -175,127 +172,138 @@ class RouteFinderModel(pl.LightningModule):
 
 class RecallAtKCallback(pl.Callback):
     """
-    Computes Recall@K on the held-out val split every N epochs.
+    Batch-level Recall@K, MRR, and alignment — computed within each val batch.
+
+    Each batch acts as its own retrieval gallery, which matches production semantics
+    (search against a few hundred climbs, not thousands). Hooks into PL's validation
+    loop via on_validation_batch_end so the val loader is only iterated once.
     """
-    def __init__(self, loader, every_n_epochs=5, ks=(1, 3, 5)):
+    def __init__(self, every_n_epochs=1, ks=(1, 3, 5)):
         self.every_n_epochs = every_n_epochs
         self.ks = ks
-        self.loader = loader
+        self._batch_data: list = []  # list of (emb: Tensor, labels: list[int])
 
-    @torch.no_grad()
-    def on_validation_epoch_end(self, trainer, pl_module):
+    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
         if (trainer.current_epoch + 1) % self.every_n_epochs != 0:
             return
+        if outputs is None:
+            return
+        emb = outputs["emb"].cpu()
+        labels = outputs["labels"].tolist() if hasattr(outputs["labels"], "tolist") else list(outputs["labels"])
+        self._batch_data.append((emb, labels))
 
-        device = next(pl_module.parameters()).device
-        pl_module.eval()
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if not self._batch_data:
+            return
 
-        embeddings, labels = [], []
-        for imgs, lbls in self.loader:
-            embeddings.append(pl_module(imgs.to(device)).cpu())
-            labels.extend(lbls.tolist() if hasattr(lbls, "tolist") else lbls)
-
-        emb = torch.cat(embeddings)
-        knn = NearestNeighbors(n_neighbors=max(self.ks) + 1, metric="cosine")
-        knn.fit(emb.numpy())
-        _, indices = knn.kneighbors(emb.numpy())
-
-        # Recall@K and MRR in one pass
-        max_k = max(self.ks)
         recall_hits = {k: 0 for k in self.ks}
-        mrr = 0.0
-        for i in range(len(labels)):
-            neighbors = [labels[j] for j in indices[i][1:max_k + 1]]
-            for k in self.ks:
-                if labels[i] in neighbors[:k]:
-                    recall_hits[k] += 1
-            for rank, label in enumerate(neighbors, start=1):
-                if label == labels[i]:
-                    mrr += 1.0 / rank
-                    break
+        mrr_sum = 0.0
+        total = 0
+        align_vals = []
 
-        metrics = {f"val_recall@{k}": recall_hits[k] / len(labels) for k in self.ks}
-        metrics["val_mrr"] = mrr / len(labels)
+        for emb, labels in self._batch_data:
+            B = len(labels)
+            if B < 2:
+                continue
+
+            # Cosine similarity — embeddings are already L2-normalised
+            sim = emb @ emb.T  # (B, B)
+
+            for i in range(B):
+                sims_i = sim[i].clone()
+                sims_i[i] = -float("inf")  # exclude self
+                ranked = sims_i.argsort(descending=True).tolist()
+
+                for k in self.ks:
+                    if labels[i] in [labels[j] for j in ranked[:k]]:
+                        recall_hits[k] += 1
+                for rank, j in enumerate(ranked, start=1):
+                    if labels[j] == labels[i]:
+                        mrr_sum += 1.0 / rank
+                        break
+
+            # Alignment: mean sq L2 dist between same-route pairs in this batch
+            route_embs: dict = defaultdict(list)
+            for i, label in enumerate(labels):
+                route_embs[label].append(i)
+            for idxs in route_embs.values():
+                if len(idxs) < 2:
+                    continue
+                e = emb[idxs]
+                sq_dist = 2 - 2 * (e @ e.T)  # ||a-b||^2 = 2 - 2cos for unit vectors
+                mask = torch.triu(torch.ones(len(idxs), len(idxs)), diagonal=1).bool()
+                align_vals.append(sq_dist[mask].mean().item())
+
+            total += B
+
+        self._batch_data.clear()
+
+        if total == 0:
+            return
+
+        metrics = {f"val_recall@{k}": recall_hits[k] / total for k in self.ks}
+        metrics["val_mrr"] = mrr_sum / total
 
         for key, val in metrics.items():
             pl_module.log(key, val, prog_bar=(key == "val_recall@1"))
         trainer.callback_metrics.update({k: torch.tensor(v) for k, v in metrics.items()})
 
-        # Alignment: mean squared L2 distance between same-route pairs
-        # Lower = tighter positive clusters
-        route_embs = defaultdict(list)
-        for i, label in enumerate(labels):
-            route_embs[label].append(i)
-
-        align_vals = []
-        for idxs in route_embs.values():
-            if len(idxs) < 2:
-                continue
-            e = emb[idxs]
-            sq_dist = 2 - 2 * (e @ e.T)  # ||a-b||^2 = 2 - 2cos for unit vectors
-            mask = torch.triu(torch.ones(len(idxs), len(idxs)), diagonal=1).bool()
-            align_vals.append(sq_dist[mask].mean().item())
-        pl_module.log("val_alignment", sum(align_vals) / len(align_vals) if align_vals else 0.0)
-
-        # Uniformity: log mean exp(-2||a-b||^2) over random pairs
-        # More negative = more uniform spread across hypersphere
-        sample = emb if len(emb) <= 2000 else emb[torch.randperm(len(emb))[:2000]]
-        sq_dists = torch.cdist(sample, sample).pow(2)
-        mask = torch.triu(torch.ones(len(sample), len(sample)), diagonal=1).bool()
-        pl_module.log("val_uniformity", sq_dists[mask].mul(-2).exp().mean().log().item())
+        if align_vals:
+            pl_module.log("val_alignment", sum(align_vals) / len(align_vals))
 
 
 # ── Training ──────────────────────────────────────────────────────────────────
 
- 
 def _build_loaders(cfg):
+    """Returns (train_loader, train_loader_hard, val_loader_1, val_loader_2, test_loader).
 
-    """Returns (train_loader, val_loader, val_eval_ds)."""
+    Stage 1 loaders use random batch sampling (easy negatives).
+    Stage 2 loaders use proximity-based batch sampling (hard negatives).
+    """
     samples_per_batch = max(1, cfg.batch_size // cfg.n_views)
+    val1_bs = cfg.val1_batch_size or cfg.batch_size
+    val2_bs = cfg.val2_batch_size or cfg.batch_size
 
     token = cfg.hf_token or os.environ.get("HF_TOKEN")
     ds = load_dataset(cfg.hf_dataset, token=token)
 
     train_split, val_split, test_split = create_split(ds["train"], cfg.train_split, cfg.val_split)
-    print(f"Images — train: {len(train_split)}  val: {len(val_split)} test: {len(test_split)}")
-    
-    # Random cross-area route sampling
+    print(f"Images — train: {len(train_split)}  val: {len(val_split)}  test: {len(test_split)}")
+
     train_loader = DataLoader(
         SupConDataset(train_split, n_views=cfg.n_views),
         batch_sampler=MultiRouteBatchSampler(train_split, samples_per_batch),
         collate_fn=supcon_collate, num_workers=cfg.num_workers, pin_memory=True,
     )
-
-    # Same construction, but with hard negative sampler
     train_loader_hard = DataLoader(
         SupConDataset(train_split, n_views=cfg.n_views),
         batch_sampler=HardNegativeBatchSampler(train_split, samples_per_batch),
         collate_fn=supcon_collate, num_workers=cfg.num_workers, pin_memory=True,
     )
-
-    val_loader = DataLoader(
+    val_loader_1 = DataLoader(
         EvalDataset(val_split),
-        batch_sampler=HardNegativeBatchSampler(
-            val_split, cfg.batch_size, shuffle=False
-        ),
+        batch_sampler=MultiRouteBatchSampler(val_split, val1_bs, shuffle=False),
         num_workers=cfg.num_workers, pin_memory=True,
     )
-
+    val_loader_2 = DataLoader(
+        EvalDataset(val_split),
+        batch_sampler=HardNegativeBatchSampler(val_split, val2_bs, shuffle=False),
+        num_workers=cfg.num_workers, pin_memory=True,
+    )
     test_loader = DataLoader(
         EvalDataset(test_split),
-        batch_sampler=HardNegativeBatchSampler(
-            test_split, cfg.batch_size, shuffle=False
-        ),
+        batch_sampler=HardNegativeBatchSampler(test_split, cfg.batch_size, shuffle=False),
+        num_workers=cfg.num_workers,
     )
 
-    return train_loader, train_loader_hard, val_loader, test_loader
+    return train_loader, train_loader_hard, val_loader_1, val_loader_2, test_loader
 
 
 def train(cfg: Config = None):
     if cfg is None:
         cfg = Config()
 
-    train_loader, train_loader_hard, val_loader, test_loader = _build_loaders(cfg)
+    train_loader, train_loader_hard, val_loader_1, val_loader_2, test_loader = _build_loaders(cfg)
 
     model = RouteFinderModel(
         embed_dim=cfg.embed_dim, proj_dim=cfg.proj_dim, lr=cfg.lr,
@@ -304,28 +312,45 @@ def train(cfg: Config = None):
         backbone_name=cfg.backbone,
     )
 
-    ckpt_cb = ModelCheckpoint(
-        monitor="val_recall@1", dirpath=cfg.checkpoint_dir,
-        filename="routefinder-{epoch:02d}-{val_recall@1:.3f}",
-        save_top_k=1, mode="max", save_last=True,
-    )
     logger = CSVLogger(cfg.checkpoint_dir, name="", version="")
-    trainer = pl.Trainer(
-        max_epochs=cfg.max_epochs, accelerator="gpu", devices=1,
-        precision=cfg.precision, log_every_n_steps=1,
-        gradient_clip_val=cfg.gradient_clip,
-        logger=logger,
-        callbacks=[
-            ckpt_cb,
-            LearningRateMonitor("epoch"),
-            RecallAtKCallback(val_loader, every_n_epochs=cfg.recall_every_n_epochs),
-            EarlyStopping("val_recall@1", patience=cfg.patience, mode="max", strict=False),
-        ],
-    )
-    trainer.fit(model, train_loader_hard, val_loader)
+
+    def _make_trainer(max_epochs, stage_name):
+        ckpt = ModelCheckpoint(
+            monitor="val_recall@1", dirpath=cfg.checkpoint_dir,
+            filename=f"{stage_name}" + "-{epoch:02d}-{val_recall@1:.3f}",
+            save_top_k=1, mode="max", save_last=(stage_name == "stage2"),
+        )
+        trainer = pl.Trainer(
+            max_epochs=max_epochs, accelerator="gpu", devices=1,
+            precision=cfg.precision, log_every_n_steps=1,
+            gradient_clip_val=cfg.gradient_clip,
+            logger=logger,
+            callbacks=[
+                ckpt,
+                LearningRateMonitor("epoch"),
+                RecallAtKCallback(every_n_epochs=cfg.recall_every_n_epochs),
+                EarlyStopping("val_recall@1", patience=cfg.patience, mode="max", strict=False),
+            ],
+        )
+        return trainer, ckpt
+
+    # ── Stage 1: random batches, easy negatives ───────────────────────────────
+    trainer_s1, ckpt_s1 = _make_trainer(cfg.stage1_epochs, "stage1")
+    trainer_s1.fit(model, train_loader, val_loader_1)
+
+    if ckpt_s1.best_model_path:
+        model = RouteFinderModel.load_from_checkpoint(ckpt_s1.best_model_path)
+
+    # ── Stage 2: proximity batches, hard negatives ────────────────────────────
+    # configure_optimizers is re-called by the new Trainer, giving Stage 2 its
+    # own warmup + cosine cycle — appropriate for the harder task.
+    trainer_s2, ckpt_s2 = _make_trainer(cfg.stage2_epochs, "stage2")
+    trainer_s2.fit(model, train_loader_hard, val_loader_2)
+
     metrics_csv = os.path.join(cfg.checkpoint_dir, "metrics.csv")
-    print(f"\nBest checkpoint: {ckpt_cb.best_model_path}")
-    return ckpt_cb.best_model_path, metrics_csv, test_loader
+    print(f"\nBest Stage 1 checkpoint: {ckpt_s1.best_model_path}")
+    print(f"Best Stage 2 checkpoint: {ckpt_s2.best_model_path}")
+    return ckpt_s2.best_model_path, metrics_csv, test_loader
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
@@ -335,7 +360,8 @@ if __name__ == "__main__":
     parser.add_argument("--hf_token", default=None)
     parser.add_argument("--hf_dataset", default="DeclanBracken/RouteFinderDatasetV2")
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--stage1_epochs", type=int, default=20)
+    parser.add_argument("--stage2_epochs", type=int, default=80)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--temperature", type=float, default=0.07)
     parser.add_argument("--num_unfrozen_blocks", type=int, default=0)
@@ -346,7 +372,8 @@ if __name__ == "__main__":
         hf_token=args.hf_token,
         hf_dataset=args.hf_dataset,
         lr=args.lr,
-        max_epochs=args.epochs,
+        stage1_epochs=args.stage1_epochs,
+        stage2_epochs=args.stage2_epochs,
         batch_size=args.batch_size,
         temperature=args.temperature,
         num_unfrozen_blocks=args.num_unfrozen_blocks,
