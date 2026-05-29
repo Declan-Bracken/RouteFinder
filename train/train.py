@@ -343,6 +343,7 @@ def train(cfg: Config = None):
             use_distributed_sampler=False,
             precision=cfg.precision, log_every_n_steps=1,
             gradient_clip_val=cfg.gradient_clip,
+            enable_progress_bar=(cfg.devices == 1),
             logger=logger,
             callbacks=[
                 ckpt,
