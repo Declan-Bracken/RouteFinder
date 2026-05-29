@@ -279,7 +279,19 @@ def _build_loaders(cfg):
     ds = load_dataset(cfg.hf_dataset, token=token)
 
     train_split, val_split, test_split = create_split(ds["train"], cfg.train_split, cfg.val_split)
-    print(f"Images — train: {len(train_split)}  val: {len(val_split)}  test: {len(test_split)}")
+
+    # In DDP each rank takes a disjoint subset of *routes* so no GPU duplicates work.
+    # Val/test stay full on every rank; sync_dist=True averages the identical metrics.
+    rank = int(os.environ.get("LOCAL_RANK", 0))
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    if world_size > 1:
+        all_routes = sorted(set(train_split["route_id"]))
+        my_routes = set(all_routes[rank::world_size])
+        indices = [i for i, rid in enumerate(train_split["route_id"]) if rid in my_routes]
+        train_split = train_split.select(indices)
+
+    if rank == 0:
+        print(f"Images — train: {len(train_split)} (per GPU)  val: {len(val_split)}  test: {len(test_split)}", flush=True)
 
     train_loader = DataLoader(
         SupConDataset(train_split, n_views=cfg.n_views),
@@ -336,11 +348,13 @@ def train(cfg: Config = None):
             filename=f"{stage_name}" + "-{epoch:02d}-{val_recall@1:.3f}",
             save_top_k=1, mode="max", save_last=(stage_name == "stage2"),
         )
+        rank = int(os.environ.get("LOCAL_RANK", 0))
         strategy = DDPStrategy(start_method="spawn") if cfg.devices > 1 else cfg.strategy
         trainer = pl.Trainer(
             max_epochs=max_epochs, accelerator="gpu", devices=cfg.devices,
             strategy=strategy,
             use_distributed_sampler=False,
+            enable_progress_bar=(rank == 0),
             precision=cfg.precision, log_every_n_steps=1,
             gradient_clip_val=cfg.gradient_clip,
             logger=logger,
