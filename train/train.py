@@ -336,6 +336,7 @@ def train(cfg: Config = None):
         trainer = pl.Trainer(
             max_epochs=max_epochs, accelerator="gpu", devices=cfg.devices,
             strategy=strategy,
+            use_distributed_sampler=False,
             precision=cfg.precision, log_every_n_steps=1,
             gradient_clip_val=cfg.gradient_clip,
             logger=logger,

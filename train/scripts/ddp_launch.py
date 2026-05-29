@@ -9,6 +9,7 @@ Each process runs this script with devices=1 — PL manages one GPU per
 process and joins the distributed group torchrun already set up.
 """
 import pickle
+import random
 import sys
 import os
 
@@ -16,6 +17,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
 def main():
+    # Seed per rank so each GPU produces different batch orderings
+    rank = int(os.environ.get("LOCAL_RANK", 0))
+    random.seed(rank)
+
     with open("/kaggle/working/cfg.pkl", "rb") as f:
         cfg = pickle.load(f)
 
