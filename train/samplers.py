@@ -57,7 +57,7 @@ def create_area_buckets(route_groups, hf_dataset) -> tuple[list[str], dict[str, 
         if ap not in seen:
             area_order.append(ap)
             seen.add(ap)
-            
+
     return (area_order, area_buckets) # return the areas ordered by proximity, and the route groups within each area
 
 def create_split(hf_dataset, train_perc: float, val_perc: float):
@@ -79,7 +79,7 @@ def create_split(hf_dataset, train_perc: float, val_perc: float):
     for area in area_order:
         routes = area_buckets[area]
         # Each route is a list of image indices as they appear in hf_dataset
-        for route in routes: 
+        for route in routes:
             if img_count < N_train:
                 train_indices.extend(route)
             elif (img_count >= N_train) & (img_count < (N_train + N_val)):
@@ -94,26 +94,44 @@ def create_split(hf_dataset, train_perc: float, val_perc: float):
 
     return train_split, val_split, test_split
 
+
+def _dist_rank_world():
+    """Returns (rank, world_size) from torch.distributed if initialized, else (0, 1)."""
+    import torch.distributed as dist
+    if dist.is_initialized():
+        return dist.get_rank(), dist.get_world_size()
+    return 0, 1
+
+
 class MultiRouteBatchSampler(BatchSampler):
     """
     Packs several complete routes into each batch. SupCon requires multiple
     samples per class within a batch — without this, most anchors have no
     positives and the loss is meaningless.
+
+    In DDP, each rank only iterates its own slice of routes (determined at
+    __iter__ time via torch.distributed, which is initialized before the
+    training loop starts). Routes are split interleaved-by-rank so each GPU
+    sees a balanced subset of ~len(routes)/world_size routes per epoch.
     """
     def __init__(self, hf_dataset, max_batch_size, shuffle=True):
         self.max_batch_size = max_batch_size
         self.shuffle = shuffle
         self.route_groups = group_by_route(hf_dataset)
-    
-    def _order_groups(self):
+
+    def _get_groups(self):
+        """Ordered route groups for this rank, shuffled if needed."""
+        rank, world_size = _dist_rank_world()
+        groups = list(self.route_groups)
         if self.shuffle:
-            random.shuffle(self.route_groups)
-        return self.route_groups
+            random.shuffle(groups)
+        if world_size > 1:
+            groups = groups[rank::world_size]
+        return groups
 
     def __iter__(self):
-        ordered_groups = self._order_groups()
         batch, batch_len = [], 0
-        for group in ordered_groups:
+        for group in self._get_groups():
             if batch_len + len(group) > self.max_batch_size and batch:
                 yield batch
                 batch, batch_len = [], 0
@@ -123,9 +141,11 @@ class MultiRouteBatchSampler(BatchSampler):
             yield batch
 
     def __len__(self):
-        total = sum(len(g) for g in self.route_groups)
+        rank, world_size = _dist_rank_world()
+        my_groups = self.route_groups[rank::world_size]
+        total = sum(len(g) for g in my_groups)
         return max(1, (total + self.max_batch_size - 1) // self.max_batch_size)
-    
+
 
 class HardNegativeBatchSampler(MultiRouteBatchSampler):
     """
@@ -141,14 +161,16 @@ class HardNegativeBatchSampler(MultiRouteBatchSampler):
 
     def __init__(self, hf_dataset, max_batch_size: int, shuffle: bool = True):
         super().__init__(hf_dataset, max_batch_size, shuffle)
-
         self._area_order, self._area_buckets = create_area_buckets(self.route_groups, hf_dataset)
 
-    def _order_groups(self):
-        ordered_groups = []
+    def _get_groups(self):
+        rank, world_size = _dist_rank_world()
+        ordered = []
         for area in self._area_order:
-            routes = self._area_buckets[area]
+            routes = list(self._area_buckets[area])
             if self.shuffle:
                 random.shuffle(routes)
-            ordered_groups.extend(routes)
-        return ordered_groups
+            ordered.extend(routes)
+        if world_size > 1:
+            ordered = ordered[rank::world_size]
+        return ordered
