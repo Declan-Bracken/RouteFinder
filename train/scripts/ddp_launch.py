@@ -19,10 +19,6 @@ def main():
     with open("/kaggle/working/cfg.pkl", "rb") as f:
         cfg = pickle.load(f)
 
-    # torchrun already created one process per GPU — tell PL to manage 1 GPU
-    # per process rather than spawning its own workers.
-    cfg.devices = 1
-
     from train.train import train
     train(cfg)
 
