@@ -51,7 +51,8 @@ class Config:
     # Training
     n_views: int = 2                # augmented views per image per batch
     batch_size: int = 128           # actual GPU batch = batch_size (sampler divides by n_views internally)
-    lr: float = 2e-4                # low LR — DINOv2 features are already strong, proj head needs gentle updates
+    lr: float = 2e-4                # projection head LR
+    backbone_lr: float = 1e-5      # unfrozen backbone block LR — much lower to avoid destroying pretrained features
     temperature: float = 0.07
     weight_decay: float = 1e-4
     stage1_epochs: int = 150        # high ceiling — early stopping decides when to quit
@@ -105,12 +106,13 @@ class RouteFinderModel(pl.LightningModule):
     num_unfrozen_blocks (0 = fully frozen, 4 = last 4 of 12 ViT blocks unfrozen).
     With more field data, unfreezing 1-2 blocks is worth trying.
     """
-    def __init__(self, embed_dim=384, proj_dim=128, lr=1e-3, temperature=0.07,
-                 weight_decay=1e-4, warmup_epochs=5, num_unfrozen_blocks=0,
-                 backbone_name="vit_small_patch14_dinov2.lvd142m"):
+    def __init__(self, embed_dim=384, proj_dim=128, lr=2e-4, backbone_lr=1e-5,
+                 temperature=0.07, weight_decay=1e-4, warmup_epochs=3,
+                 num_unfrozen_blocks=0, backbone_name="vit_small_patch14_dinov2.lvd142m"):
         super().__init__()
         self.warmup_epochs = warmup_epochs
         self.lr = lr
+        self.backbone_lr = backbone_lr
         self.weight_decay = weight_decay
         self.save_hyperparameters()
 
@@ -162,8 +164,11 @@ class RouteFinderModel(pl.LightningModule):
         return {"emb": self(imgs).detach(), "labels": labels}
 
     def configure_optimizers(self):
-        params = filter(lambda p: p.requires_grad, self.parameters())
-        opt = torch.optim.AdamW(params, lr=self.lr, weight_decay=self.weight_decay)
+        backbone_params = [p for p in self.backbone.parameters() if p.requires_grad]
+        param_groups = [{"params": list(self.proj.parameters()), "lr": self.lr}]
+        if backbone_params:
+            param_groups.append({"params": backbone_params, "lr": self.backbone_lr})
+        opt = torch.optim.AdamW(param_groups, weight_decay=self.weight_decay)
         sched = _make_lr_scheduler(opt, self.warmup_epochs, self.trainer.max_epochs)
         return [opt], [{"scheduler": sched, "interval": "epoch"}]
 
@@ -307,9 +312,9 @@ def train(cfg: Config = None):
 
     model = RouteFinderModel(
         embed_dim=cfg.embed_dim, proj_dim=cfg.proj_dim, lr=cfg.lr,
-        temperature=cfg.temperature, weight_decay=cfg.weight_decay,
-        warmup_epochs=cfg.warmup_epochs, num_unfrozen_blocks=cfg.num_unfrozen_blocks,
-        backbone_name=cfg.backbone,
+        backbone_lr=cfg.backbone_lr, temperature=cfg.temperature,
+        weight_decay=cfg.weight_decay, warmup_epochs=cfg.warmup_epochs,
+        num_unfrozen_blocks=cfg.num_unfrozen_blocks, backbone_name=cfg.backbone,
     )
 
     logger = CSVLogger(cfg.checkpoint_dir, name="", version="")
@@ -363,9 +368,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--hf_token", default=None)
     parser.add_argument("--hf_dataset", default="DeclanBracken/RouteFinderDatasetV2")
-    parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--stage1_epochs", type=int, default=20)
-    parser.add_argument("--stage2_epochs", type=int, default=80)
+    parser.add_argument("--lr", type=float, default=2e-4)
+    parser.add_argument("--backbone_lr", type=float, default=1e-5)
+    parser.add_argument("--stage1_epochs", type=int, default=150)
+    parser.add_argument("--stage2_epochs", type=int, default=0)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--temperature", type=float, default=0.07)
     parser.add_argument("--num_unfrozen_blocks", type=int, default=0)
@@ -376,6 +382,7 @@ if __name__ == "__main__":
         hf_token=args.hf_token,
         hf_dataset=args.hf_dataset,
         lr=args.lr,
+        backbone_lr=args.backbone_lr,
         stage1_epochs=args.stage1_epochs,
         stage2_epochs=args.stage2_epochs,
         batch_size=args.batch_size,
