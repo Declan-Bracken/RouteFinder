@@ -343,7 +343,6 @@ def train(cfg: Config = None):
             use_distributed_sampler=False,
             precision=cfg.precision, log_every_n_steps=1,
             gradient_clip_val=cfg.gradient_clip,
-            enable_progress_bar=(cfg.devices == 1),
             logger=logger,
             callbacks=[
                 ckpt,
@@ -356,6 +355,7 @@ def train(cfg: Config = None):
 
     # ── Head warmup: frozen backbone, projection head only ────────────────────
     if cfg.head_only_epochs > 0 and cfg.num_unfrozen_blocks > 0:
+        print("Starting head warmup...", flush=True)
         trainer_head, ckpt_head = _make_trainer(cfg.head_only_epochs, "stage1_head")
         trainer_head.fit(model, train_loader, val_loader_1)
         if ckpt_head.best_model_path:
@@ -367,6 +367,7 @@ def train(cfg: Config = None):
             )
 
     # ── Stage 1: random batches, easy negatives ───────────────────────────────
+    print("Starting Stage 1...", flush=True)
     trainer_s1, ckpt_s1 = _make_trainer(cfg.stage1_epochs, "stage1")
     trainer_s1.fit(model, train_loader, val_loader_1)
 
