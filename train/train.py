@@ -75,6 +75,10 @@ class Config:
     image_dir: str = ""
     manifest_path: str = ""           # CSV with image_id, route_id, area_id, b2_key, label
 
+    # Hardware
+    devices: int = 1
+    strategy: str = "auto"          # "ddp_notebook" for multi-GPU on Kaggle/Jupyter
+
     # I/O
     num_workers: int = 4
     checkpoint_dir: str = "checkpoints"
@@ -328,7 +332,8 @@ def train(cfg: Config = None):
             save_top_k=1, mode="max", save_last=(stage_name == "stage2"),
         )
         trainer = pl.Trainer(
-            max_epochs=max_epochs, accelerator="gpu", devices=1,
+            max_epochs=max_epochs, accelerator="gpu", devices=cfg.devices,
+            strategy=cfg.strategy,
             precision=cfg.precision, log_every_n_steps=1,
             gradient_clip_val=cfg.gradient_clip,
             logger=logger,
