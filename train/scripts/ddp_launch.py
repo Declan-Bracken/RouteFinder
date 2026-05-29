@@ -12,11 +12,15 @@ import pickle
 import random
 import sys
 import os
+import torch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
 def main():
+    # Known benign DDP+AMP stream mismatch — no correctness impact
+    torch.autograd.graph.set_warn_on_accumulate_grad_stream_mismatch(False)
+
     # Seed per rank so each GPU produces different batch orderings
     rank = int(os.environ.get("LOCAL_RANK", 0))
     random.seed(rank)
