@@ -27,6 +27,7 @@ from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
 from pytorch_lightning.loggers import CSVLogger
+from pytorch_lightning.strategies import DDPStrategy
 from datasets import load_dataset
 import timm
 from pytorch_metric_learning.losses import SupConLoss
@@ -331,9 +332,10 @@ def train(cfg: Config = None):
             filename=f"{stage_name}" + "-{epoch:02d}-{val_recall@1:.3f}",
             save_top_k=1, mode="max", save_last=(stage_name == "stage2"),
         )
+        strategy = DDPStrategy(start_method="spawn") if cfg.devices > 1 else cfg.strategy
         trainer = pl.Trainer(
             max_epochs=max_epochs, accelerator="gpu", devices=cfg.devices,
-            strategy=cfg.strategy,
+            strategy=strategy,
             precision=cfg.precision, log_every_n_steps=1,
             gradient_clip_val=cfg.gradient_clip,
             logger=logger,
