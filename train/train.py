@@ -162,7 +162,7 @@ class RouteFinderModel(pl.LightningModule):
 
     def training_step(self, batch, _):
         loss = self._shared_step(batch)
-        self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss
 
     def validation_step(self, batch, _):
@@ -256,11 +256,11 @@ class RecallAtKCallback(pl.Callback):
         metrics["val_mrr"] = mrr_sum / total
 
         for key, val in metrics.items():
-            pl_module.log(key, val, prog_bar=(key == "val_recall@1"))
+            pl_module.log(key, val, prog_bar=(key == "val_recall@1"), sync_dist=True)
         trainer.callback_metrics.update({k: torch.tensor(v) for k, v in metrics.items()})
 
         if align_vals:
-            pl_module.log("val_alignment", sum(align_vals) / len(align_vals))
+            pl_module.log("val_alignment", sum(align_vals) / len(align_vals), sync_dist=True)
 
 
 # ── Training ──────────────────────────────────────────────────────────────────
@@ -285,21 +285,25 @@ def _build_loaders(cfg):
         SupConDataset(train_split, n_views=cfg.n_views),
         batch_sampler=MultiRouteBatchSampler(train_split, samples_per_batch),
         collate_fn=supcon_collate, num_workers=cfg.num_workers, pin_memory=True,
+        persistent_workers=(cfg.num_workers > 0),
     )
     train_loader_hard = DataLoader(
         SupConDataset(train_split, n_views=cfg.n_views),
         batch_sampler=HardNegativeBatchSampler(train_split, samples_per_batch),
         collate_fn=supcon_collate, num_workers=cfg.num_workers, pin_memory=True,
+        persistent_workers=(cfg.num_workers > 0),
     )
     val_loader_1 = DataLoader(
         EvalDataset(val_split),
         batch_sampler=MultiRouteBatchSampler(val_split, val1_bs, shuffle=False),
         num_workers=cfg.num_workers, pin_memory=True,
+        persistent_workers=(cfg.num_workers > 0),
     )
     val_loader_2 = DataLoader(
         EvalDataset(val_split),
         batch_sampler=HardNegativeBatchSampler(val_split, val2_bs, shuffle=False),
         num_workers=cfg.num_workers, pin_memory=True,
+        persistent_workers=(cfg.num_workers > 0),
     )
     test_loader = DataLoader(
         EvalDataset(test_split),
