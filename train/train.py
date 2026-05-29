@@ -348,11 +348,12 @@ def train(cfg: Config = None):
             filename=f"{stage_name}" + "-{epoch:02d}-{val_recall@1:.3f}",
             save_top_k=1, mode="max", save_last=(stage_name == "stage2"),
         )
+        # LOCAL_RANK is set by torchrun before this process starts.
+        # cfg.devices=1 here (set in ddp_launch.py) so PL manages this GPU only.
         rank = int(os.environ.get("LOCAL_RANK", 0))
-        strategy = DDPStrategy(start_method="spawn") if cfg.devices > 1 else cfg.strategy
         trainer = pl.Trainer(
             max_epochs=max_epochs, accelerator="gpu", devices=cfg.devices,
-            strategy=strategy,
+            strategy=cfg.strategy,
             use_distributed_sampler=False,
             enable_progress_bar=(rank == 0),
             precision=cfg.precision, log_every_n_steps=1,
