@@ -51,12 +51,12 @@ class Config:
     # Training
     n_views: int = 2                # augmented views per image per batch
     batch_size: int = 128           # actual GPU batch = batch_size (sampler divides by n_views internally)
-    lr: float = 1e-3                # higher LR is fine — only the small proj head is being trained
+    lr: float = 2e-4                # low LR — DINOv2 features are already strong, proj head needs gentle updates
     temperature: float = 0.07
     weight_decay: float = 1e-4
-    stage1_epochs: int = 20         # Stage 1: random batches (easy negatives)
-    stage2_epochs: int = 80         # Stage 2: proximity batches (hard negatives)
-    warmup_epochs: int = 5
+    stage1_epochs: int = 150        # high ceiling — early stopping decides when to quit
+    stage2_epochs: int = 0          # set >0 to run Stage 2 after Stage 1 saturates
+    warmup_epochs: int = 3          # short warmup — no need to ramp to a large LR
     patience: int = 15
     gradient_clip: float = 1.0
     precision: int = 16
