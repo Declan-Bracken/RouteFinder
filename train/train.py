@@ -55,6 +55,7 @@ class Config:
     backbone_lr: float = 1e-5      # unfrozen backbone block LR — much lower to avoid destroying pretrained features
     temperature: float = 0.07
     weight_decay: float = 1e-4
+    head_only_epochs: int = 5       # epochs to train only the projection head before unfreezing backbone blocks
     stage1_epochs: int = 150        # high ceiling — early stopping decides when to quit
     stage2_epochs: int = 0          # set >0 to run Stage 2 after Stage 1 saturates
     warmup_epochs: int = 3          # short warmup — no need to ramp to a large LR
@@ -310,11 +311,12 @@ def train(cfg: Config = None):
 
     train_loader, train_loader_hard, val_loader_1, val_loader_2, test_loader = _build_loaders(cfg)
 
+    # Start with frozen backbone — unfreeze blocks after head stabilises
     model = RouteFinderModel(
         embed_dim=cfg.embed_dim, proj_dim=cfg.proj_dim, lr=cfg.lr,
         backbone_lr=cfg.backbone_lr, temperature=cfg.temperature,
         weight_decay=cfg.weight_decay, warmup_epochs=cfg.warmup_epochs,
-        num_unfrozen_blocks=cfg.num_unfrozen_blocks, backbone_name=cfg.backbone,
+        num_unfrozen_blocks=0, backbone_name=cfg.backbone,
     )
 
     logger = CSVLogger(cfg.checkpoint_dir, name="", version="")
@@ -338,6 +340,18 @@ def train(cfg: Config = None):
             ],
         )
         return trainer, ckpt
+
+    # ── Head warmup: frozen backbone, projection head only ────────────────────
+    if cfg.head_only_epochs > 0 and cfg.num_unfrozen_blocks > 0:
+        trainer_head, ckpt_head = _make_trainer(cfg.head_only_epochs, "stage1_head")
+        trainer_head.fit(model, train_loader, val_loader_1)
+        if ckpt_head.best_model_path:
+            # Reload best head weights then unfreeze backbone blocks for Stage 1
+            model = RouteFinderModel.load_from_checkpoint(
+                ckpt_head.best_model_path,
+                num_unfrozen_blocks=cfg.num_unfrozen_blocks,
+                backbone_lr=cfg.backbone_lr,
+            )
 
     # ── Stage 1: random batches, easy negatives ───────────────────────────────
     trainer_s1, ckpt_s1 = _make_trainer(cfg.stage1_epochs, "stage1")
@@ -370,6 +384,7 @@ if __name__ == "__main__":
     parser.add_argument("--hf_dataset", default="DeclanBracken/RouteFinderDatasetV2")
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--backbone_lr", type=float, default=1e-5)
+    parser.add_argument("--head_only_epochs", type=int, default=5)
     parser.add_argument("--stage1_epochs", type=int, default=150)
     parser.add_argument("--stage2_epochs", type=int, default=0)
     parser.add_argument("--batch_size", type=int, default=128)
@@ -383,6 +398,7 @@ if __name__ == "__main__":
         hf_dataset=args.hf_dataset,
         lr=args.lr,
         backbone_lr=args.backbone_lr,
+        head_only_epochs=args.head_only_epochs,
         stage1_epochs=args.stage1_epochs,
         stage2_epochs=args.stage2_epochs,
         batch_size=args.batch_size,
