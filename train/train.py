@@ -319,12 +319,16 @@ def train(cfg: Config = None):
 
     train_loader, train_loader_hard, val_loader_1, val_loader_2, test_loader = _build_loaders(cfg)
 
-    # Start with frozen backbone — unfreeze blocks after head stabilises
+    # Head warmup only makes sense when there's a projection head to train in isolation.
+    # Without a head (proj_dim=0), start with backbone blocks already unfrozen.
+    do_head_warmup = cfg.proj_dim > 0 and cfg.head_only_epochs > 0 and cfg.num_unfrozen_blocks > 0
+    initial_unfrozen = 0 if do_head_warmup else cfg.num_unfrozen_blocks
+
     model = RouteFinderModel(
         embed_dim=cfg.embed_dim, proj_dim=cfg.proj_dim, img_size=cfg.img_size,
         lr=cfg.lr, backbone_lr=cfg.backbone_lr, temperature=cfg.temperature,
         weight_decay=cfg.weight_decay, warmup_epochs=cfg.warmup_epochs,
-        num_unfrozen_blocks=0, backbone_name=cfg.backbone,
+        num_unfrozen_blocks=initial_unfrozen, backbone_name=cfg.backbone,
     )
 
     logger = CSVLogger(cfg.checkpoint_dir, name="", version="")
@@ -350,11 +354,10 @@ def train(cfg: Config = None):
         return trainer, ckpt
 
     # ── Head warmup: frozen backbone, projection head only ────────────────────
-    if cfg.head_only_epochs > 0 and cfg.num_unfrozen_blocks > 0:
+    if do_head_warmup:
         trainer_head, ckpt_head = _make_trainer(cfg.head_only_epochs, "stage1_head")
         trainer_head.fit(model, train_loader, val_loader_1)
         if ckpt_head.best_model_path:
-            # Reload best head weights then unfreeze backbone blocks for Stage 1
             model = RouteFinderModel.load_from_checkpoint(
                 ckpt_head.best_model_path,
                 num_unfrozen_blocks=cfg.num_unfrozen_blocks,
