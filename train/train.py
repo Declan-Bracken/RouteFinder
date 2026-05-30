@@ -45,7 +45,8 @@ class Config:
     # Model
     backbone: str = "vit_small_patch14_dinov2.lvd142m"
     embed_dim: int = 384            # DINOv2-S output dim — don't change unless switching backbone
-    proj_dim: int = 128             # projection head output dim
+    proj_dim: int = 128             # projection head output dim; set to 0 to skip the head entirely
+    img_size: int = 224             # input resolution; 336 gives richer features but needs smaller batch
     num_unfrozen_blocks: int = 0    # unfreeze last N transformer blocks (0 = fully frozen backbone)
 
     # Training
@@ -107,7 +108,7 @@ class RouteFinderModel(pl.LightningModule):
     num_unfrozen_blocks (0 = fully frozen, 4 = last 4 of 12 ViT blocks unfrozen).
     With more field data, unfreezing 1-2 blocks is worth trying.
     """
-    def __init__(self, embed_dim=384, proj_dim=128, lr=2e-4, backbone_lr=1e-5,
+    def __init__(self, embed_dim=384, proj_dim=128, img_size=224, lr=2e-4, backbone_lr=1e-5,
                  temperature=0.07, weight_decay=1e-4, warmup_epochs=3,
                  num_unfrozen_blocks=0, backbone_name="vit_small_patch14_dinov2.lvd142m"):
         super().__init__()
@@ -118,32 +119,37 @@ class RouteFinderModel(pl.LightningModule):
         self.save_hyperparameters()
 
         self.backbone = timm.create_model(
-            backbone_name, pretrained=True, num_classes=0, img_size=224
+            backbone_name, pretrained=True, num_classes=0, img_size=img_size
         )
 
-        # Freeze everything first
         for p in self.backbone.parameters():
             p.requires_grad = False
 
-        # Optionally unfreeze the last N transformer blocks
         if num_unfrozen_blocks > 0:
             for block in self.backbone.blocks[-num_unfrozen_blocks:]:
                 for p in block.parameters():
                     p.requires_grad = True
-            # Always unfreeze the final LayerNorm
             for p in self.backbone.norm.parameters():
                 p.requires_grad = True
 
-        self.proj = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim),
-            nn.GELU(),
-            nn.Linear(embed_dim, proj_dim),
-        )
+        # proj_dim=0 → no projection head; SupConLoss runs directly on backbone output
+        if proj_dim > 0:
+            self.proj = nn.Sequential(
+                nn.Linear(embed_dim, embed_dim),
+                nn.GELU(),
+                nn.Linear(embed_dim, proj_dim),
+            )
+        else:
+            self.proj = None
+
         self.loss_fn = SupConLoss(temperature=temperature)
 
     def encode(self, x):
         """L2-normalised embedding — use this for DB storage and KNN queries."""
-        return F.normalize(self.proj(self.backbone(x)), dim=-1)
+        feat = self.backbone(x)
+        if self.proj is not None:
+            feat = self.proj(feat)
+        return F.normalize(feat, dim=-1)
 
     def forward(self, x):
         return self.encode(x)
@@ -166,9 +172,11 @@ class RouteFinderModel(pl.LightningModule):
 
     def configure_optimizers(self):
         backbone_params = [p for p in self.backbone.parameters() if p.requires_grad]
-        param_groups = [{"params": list(self.proj.parameters()), "lr": self.lr}]
+        proj_params = list(self.proj.parameters()) if self.proj is not None else []
+        param_groups = [{"params": proj_params, "lr": self.lr}] if proj_params else []
         if backbone_params:
-            param_groups.append({"params": backbone_params, "lr": self.backbone_lr})
+            lr = self.lr if not param_groups else self.backbone_lr
+            param_groups.append({"params": backbone_params, "lr": lr})
         opt = torch.optim.AdamW(param_groups, weight_decay=self.weight_decay)
         sched = _make_lr_scheduler(opt, self.warmup_epochs, self.trainer.max_epochs)
         return [opt], [{"scheduler": sched, "interval": "epoch"}]
@@ -277,27 +285,27 @@ def _build_loaders(cfg):
     print(f"Images — train: {len(train_split)}  val: {len(val_split)}  test: {len(test_split)}")
 
     train_loader = DataLoader(
-        SupConDataset(train_split, n_views=cfg.n_views),
+        SupConDataset(train_split, n_views=cfg.n_views, img_size=cfg.img_size),
         batch_sampler=MultiRouteBatchSampler(train_split, samples_per_batch),
         collate_fn=supcon_collate, num_workers=cfg.num_workers, pin_memory=True,
     )
     train_loader_hard = DataLoader(
-        SupConDataset(train_split, n_views=cfg.n_views),
+        SupConDataset(train_split, n_views=cfg.n_views, img_size=cfg.img_size),
         batch_sampler=HardNegativeBatchSampler(train_split, samples_per_batch),
         collate_fn=supcon_collate, num_workers=cfg.num_workers, pin_memory=True,
     )
     val_loader_1 = DataLoader(
-        EvalDataset(val_split),
+        EvalDataset(val_split, img_size=cfg.img_size),
         batch_sampler=MultiRouteBatchSampler(val_split, val1_bs, shuffle=False),
         num_workers=cfg.num_workers, pin_memory=True,
     )
     val_loader_2 = DataLoader(
-        EvalDataset(val_split),
+        EvalDataset(val_split, img_size=cfg.img_size),
         batch_sampler=HardNegativeBatchSampler(val_split, val2_bs, shuffle=False),
         num_workers=cfg.num_workers, pin_memory=True,
     )
     test_loader = DataLoader(
-        EvalDataset(test_split),
+        EvalDataset(test_split, img_size=cfg.img_size),
         batch_sampler=HardNegativeBatchSampler(test_split, cfg.batch_size, shuffle=False),
         num_workers=cfg.num_workers,
     )
@@ -313,8 +321,8 @@ def train(cfg: Config = None):
 
     # Start with frozen backbone — unfreeze blocks after head stabilises
     model = RouteFinderModel(
-        embed_dim=cfg.embed_dim, proj_dim=cfg.proj_dim, lr=cfg.lr,
-        backbone_lr=cfg.backbone_lr, temperature=cfg.temperature,
+        embed_dim=cfg.embed_dim, proj_dim=cfg.proj_dim, img_size=cfg.img_size,
+        lr=cfg.lr, backbone_lr=cfg.backbone_lr, temperature=cfg.temperature,
         weight_decay=cfg.weight_decay, warmup_epochs=cfg.warmup_epochs,
         num_unfrozen_blocks=0, backbone_name=cfg.backbone,
     )
