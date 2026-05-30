@@ -341,16 +341,20 @@ def train(cfg: Config = None):
     if ckpt_s1.best_model_path:
         model = RouteFinderModel.load_from_checkpoint(ckpt_s1.best_model_path)
 
-    # ── Stage 2: proximity batches, hard negatives ────────────────────────────
+    metrics_csv = os.path.join(cfg.checkpoint_dir, "metrics.csv")
+    print(f"\nBest Stage 1 checkpoint: {ckpt_s1.best_model_path}")
+
+    if cfg.stage2_epochs <= 0:
+        return ckpt_s1.best_model_path, metrics_csv, test_loader
+
+    # ── Stage 2: mixed hard+easy batches ─────────────────────────────────────
     # configure_optimizers is re-called by the new Trainer, giving Stage 2 its
     # own warmup + cosine cycle — appropriate for the harder task.
     trainer_s2, ckpt_s2 = _make_trainer(cfg.stage2_epochs, "stage2")
     trainer_s2.fit(model, train_loader_hard, val_loader_2)
 
-    metrics_csv = os.path.join(cfg.checkpoint_dir, "metrics.csv")
-    print(f"\nBest Stage 1 checkpoint: {ckpt_s1.best_model_path}")
     print(f"Best Stage 2 checkpoint: {ckpt_s2.best_model_path}")
-    return ckpt_s2.best_model_path, metrics_csv, test_loader
+    return ckpt_s2.best_model_path or ckpt_s1.best_model_path, metrics_csv, test_loader
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
