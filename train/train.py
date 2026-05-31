@@ -27,6 +27,7 @@ from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
 from pytorch_lightning.loggers import CSVLogger
+from pytorch_lightning.strategies import DDPStrategy
 from datasets import load_dataset
 import timm
 from pytorch_metric_learning.losses import SupConLoss
@@ -68,13 +69,17 @@ class Config:
     recall_every_n_epochs: int = 1  # every epoch
     train_split: float = 0.8        # fraction of images to use for training
     val_split: float = 0.1          # fraction of images to use for validation
-    val1_batch_size: int = 0        # Stage 1 val gallery size (0 = use batch_size)
-    val2_batch_size: int = 0        # Stage 2 val gallery size (0 = use batch_size)
+    val1_batch_size: int = 128        # Stage 1 val gallery size (0 = use batch_size)
+    val2_batch_size: int = 128        # Stage 2 val gallery size (0 = use batch_size)
 
     # Local image directory (set when training from B2-downloaded images)
     # If set, image_dir + manifest_path are used instead of hf_dataset
     image_dir: str = ""
     manifest_path: str = ""           # CSV with image_id, route_id, area_id, b2_key, label
+
+    # Hardware
+    devices: int = 1
+    strategy: str = "auto"
 
     # I/O
     num_workers: int = 4
@@ -163,7 +168,7 @@ class RouteFinderModel(pl.LightningModule):
 
     def training_step(self, batch, _):
         loss = self._shared_step(batch)
-        self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         return loss
 
     def validation_step(self, batch, _):
@@ -259,11 +264,11 @@ class RecallAtKCallback(pl.Callback):
         metrics["val_mrr"] = mrr_sum / total
 
         for key, val in metrics.items():
-            pl_module.log(key, val, prog_bar=(key == "val_recall@1"))
+            pl_module.log(key, val, prog_bar=(key == "val_recall@1"), sync_dist=True)
         trainer.callback_metrics.update({k: torch.tensor(v) for k, v in metrics.items()})
 
         if align_vals:
-            pl_module.log("val_alignment", sum(align_vals) / len(align_vals))
+            pl_module.log("val_alignment", sum(align_vals) / len(align_vals), sync_dist=True)
 
 
 # ── Training ──────────────────────────────────────────────────────────────────
@@ -339,8 +344,11 @@ def train(cfg: Config = None):
             filename=f"{stage_name}" + "-{epoch:02d}-{val_recall@1:.3f}",
             save_top_k=1, mode="max", save_last=(stage_name == "stage2"),
         )
+        strategy = DDPStrategy(start_method="spawn") if cfg.devices > 1 else cfg.strategy
         trainer = pl.Trainer(
-            max_epochs=max_epochs, accelerator="gpu", devices=1,
+            max_epochs=max_epochs, accelerator="gpu", devices=cfg.devices,
+            strategy=strategy,
+            use_distributed_sampler=False,
             precision=cfg.precision, log_every_n_steps=1,
             gradient_clip_val=cfg.gradient_clip,
             logger=logger,
