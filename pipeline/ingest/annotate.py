@@ -10,7 +10,7 @@ import streamlit as st
 
 from routefinder.data.download import prefetch_cached_images, load_image, remove_image_from_cache
 from routefinder.data.extract import load_flattened_tree
-from scripts.mine import get_multiview_df
+from pipeline.dataset.mine import get_multiview_df
 
 DATA_PATH = Path("data/trees/mountain_project_tree.json.gz")
 PROCESSED_PATH = Path("data/tagged_trees/processed_mountain_project_tree.csv")

@@ -9,13 +9,22 @@ build/
 # Logs
 *.log
 
+# Secrets
+.env
+
 # Data — large files and ephemeral cache
 data/cache/
 data/clip_filter_cache/
 data/trees/mountain_project_tree.json.gz
+data/tagged_trees/
 data/test_images/
+data/uploaded_image_indices/
 data/clip_filter_viz.html
 data/clip_validation_results.csv
+data/mp_dataset_manifest.csv
+data/analysis/*.ipynb
+data/analysis/*.png
+data/hard_negative_analysis.ipynb
 
 # Model checkpoints
 models/pretrained/
