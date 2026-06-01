@@ -32,7 +32,7 @@ from datasets import load_dataset
 import timm
 from pytorch_metric_learning.losses import SupConLoss
 
-from train.samplers import create_split, MultiRouteBatchSampler, HardNegativeBatchSampler
+from train.samplers import create_split, MultiRouteBatchSampler, HardNegativeBatchSampler, HardNegMiningBatchSampler
 from train.datasets import supcon_collate, SupConDataset, EvalDataset
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -72,6 +72,11 @@ class Config:
     val1_batch_size: int = 128        # Stage 1 val gallery size (0 = use batch_size)
     val2_batch_size: int = 128        # Stage 2 val gallery size (0 = use batch_size)
 
+    # Online hard negative mining (Stage 2)
+    mine_every_n_epochs: int = 5    # re-mine embeddings every N epochs
+    hard_neg_superset: int = 200    # top-K candidates stored per route in the index
+    hard_neg_frac: float = 0.7      # fraction of each batch filled with hard negatives
+
     # Local image directory (set when training from B2-downloaded images)
     # If set, image_dir + manifest_path are used instead of hf_dataset
     image_dir: str = ""
@@ -84,6 +89,7 @@ class Config:
     # I/O
     num_workers: int = 4
     checkpoint_dir: str = "checkpoints"
+    stage1_ckpt: str = ""            # path to a pre-trained Stage 1 checkpoint; skips Stage 1 training entirely
 
 
 # ── Model ─────────────────────────────────────────────────────────────────────
@@ -265,19 +271,117 @@ class RecallAtKCallback(pl.Callback):
 
         for key, val in metrics.items():
             pl_module.log(key, val, prog_bar=(key == "val_recall@1"), sync_dist=True)
-        trainer.callback_metrics.update({k: torch.tensor(v) for k, v in metrics.items()})
 
         if align_vals:
             pl_module.log("val_alignment", sum(align_vals) / len(align_vals), sync_dist=True)
 
 
+# ── Hard Negative Mining Callback ─────────────────────────────────────────────
+
+class HardNegMiningCallback(pl.Callback):
+    """
+    Periodically recomputes route-level embeddings and refreshes the sampler's
+    hard negative index.
+
+    Every mine_every_n_epochs the callback:
+      1. Forward-passes the training set (no augmentation, via EvalDataset)
+      2. Mean-pools image embeddings per route_id → one embedding per route
+      3. Computes chunked pairwise cosine similarity across all routes
+      4. Stores top-hard_neg_superset similar routes per route (excl. self)
+      5. Calls sampler.update_index() so the next epoch uses the fresh index
+    """
+    def __init__(self, train_split, sampler: HardNegMiningBatchSampler,
+                 mine_every_n_epochs: int = 5, hard_neg_superset: int = 200,
+                 img_size: int = 224, batch_size: int = 128, num_workers: int = 4):
+        self.train_split = train_split
+        self.sampler = sampler
+        self.mine_every_n_epochs = mine_every_n_epochs
+        self.hard_neg_superset = hard_neg_superset
+        self.img_size = img_size
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+
+    @torch.no_grad()
+    def _mine(self, pl_module):
+        device = pl_module.device
+        pl_module.eval()
+
+        loader = DataLoader(
+            EvalDataset(self.train_split, img_size=self.img_size),
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            pin_memory=(device.type != "cpu"),
+        )
+
+        all_embs, all_route_ids = [], []
+        for imgs, rids in loader:
+            embs = pl_module(imgs.to(device)).cpu()
+            all_embs.append(embs)
+            all_route_ids.extend(rids.tolist())
+
+        all_embs = torch.cat(all_embs, dim=0)  # (N_images, D)
+
+        # Mean-pool per route → one L2-normalised embedding per route
+        route_to_img_indices: dict[int, list[int]] = defaultdict(list)
+        for i, rid in enumerate(all_route_ids):
+            route_to_img_indices[rid].append(i)
+
+        route_ids = list(route_to_img_indices.keys())
+        route_embs = torch.stack([
+            F.normalize(all_embs[route_to_img_indices[rid]].mean(dim=0), dim=-1)
+            for rid in route_ids
+        ])  # (R, D) — on CPU
+
+        # Chunked pairwise cosine similarity to avoid a full R×R matrix
+        R = len(route_ids)
+        S = min(self.hard_neg_superset, R - 1)
+        hard_neg_index: dict[int, list[int]] = {}
+        chunk_size = 256
+
+        for start in range(0, R, chunk_size):
+            end = min(start + chunk_size, R)
+            sims = route_embs[start:end] @ route_embs.T  # (C, R)
+            for local_i, rid in enumerate(route_ids[start:end]):
+                row = sims[local_i].clone()
+                row[start + local_i] = -float("inf")  # exclude self
+                top_indices = row.topk(S).indices.tolist()
+                hard_neg_index[rid] = [route_ids[j] for j in top_indices]
+
+        pl_module.train()
+        return hard_neg_index
+
+    def _log_rank0(self, msg):
+        try:
+            import torch.distributed as dist
+            if dist.is_initialized() and dist.get_rank() != 0:
+                return
+        except Exception:
+            pass
+        print(msg)
+
+    def on_fit_start(self, trainer, pl_module):
+        self._log_rank0("\n[HardNegMining] Initial mining from Stage 1 checkpoint...")
+        hard_neg_index = self._mine(pl_module)
+        self.sampler.update_index(hard_neg_index)
+        self._log_rank0(f"[HardNegMining] Initial index set: {len(hard_neg_index)} routes, top-{self.hard_neg_superset} candidates each")
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        if (trainer.current_epoch + 1) % self.mine_every_n_epochs != 0:
+            return
+        self._log_rank0(f"\n[HardNegMining] epoch {trainer.current_epoch + 1}: re-mining embeddings...")
+        hard_neg_index = self._mine(pl_module)
+        self.sampler.update_index(hard_neg_index)
+        self._log_rank0(f"[HardNegMining] index updated: {len(hard_neg_index)} routes, top-{self.hard_neg_superset} candidates each")
+
+
 # ── Training ──────────────────────────────────────────────────────────────────
 
 def _build_loaders(cfg):
-    """Returns (train_loader, train_loader_hard, val_loader_1, val_loader_2, test_loader).
+    """Returns (train_split, train_loader, val_loader_1, val_loader_2, test_loader).
 
-    Stage 1 loaders use random batch sampling (easy negatives).
-    Stage 2 loaders use proximity-based batch sampling (hard negatives).
+    Stage 1 uses random batch sampling (easy negatives).
+    Stage 2 creates its own HardNegMiningBatchSampler inline (needs train_split).
     """
     samples_per_batch = max(1, cfg.batch_size // cfg.n_views)
     val1_bs = cfg.val1_batch_size or cfg.batch_size
@@ -292,11 +396,6 @@ def _build_loaders(cfg):
     train_loader = DataLoader(
         SupConDataset(train_split, n_views=cfg.n_views, img_size=cfg.img_size),
         batch_sampler=MultiRouteBatchSampler(train_split, samples_per_batch),
-        collate_fn=supcon_collate, num_workers=cfg.num_workers, pin_memory=True,
-    )
-    train_loader_hard = DataLoader(
-        SupConDataset(train_split, n_views=cfg.n_views, img_size=cfg.img_size),
-        batch_sampler=HardNegativeBatchSampler(train_split, samples_per_batch),
         collate_fn=supcon_collate, num_workers=cfg.num_workers, pin_memory=True,
     )
     val_loader_1 = DataLoader(
@@ -315,36 +414,33 @@ def _build_loaders(cfg):
         num_workers=cfg.num_workers,
     )
 
-    return train_loader, train_loader_hard, val_loader_1, val_loader_2, test_loader
+    return train_split, train_loader, val_loader_1, val_loader_2, test_loader
 
 
 def train(cfg: Config = None):
     if cfg is None:
         cfg = Config()
 
-    train_loader, train_loader_hard, val_loader_1, val_loader_2, test_loader = _build_loaders(cfg)
-
-    # Head warmup only makes sense when there's a projection head to train in isolation.
-    # Without a head (proj_dim=0), start with backbone blocks already unfrozen.
-    do_head_warmup = cfg.proj_dim > 0 and cfg.head_only_epochs > 0 and cfg.num_unfrozen_blocks > 0
-    initial_unfrozen = 0 if do_head_warmup else cfg.num_unfrozen_blocks
-
-    model = RouteFinderModel(
-        embed_dim=cfg.embed_dim, proj_dim=cfg.proj_dim, img_size=cfg.img_size,
-        lr=cfg.lr, backbone_lr=cfg.backbone_lr, temperature=cfg.temperature,
-        weight_decay=cfg.weight_decay, warmup_epochs=cfg.warmup_epochs,
-        num_unfrozen_blocks=initial_unfrozen, backbone_name=cfg.backbone,
-    )
+    train_split, train_loader, val_loader_1, val_loader_2, test_loader = _build_loaders(cfg)
 
     logger = CSVLogger(cfg.checkpoint_dir, name="", version="")
+    metrics_csv = os.path.join(cfg.checkpoint_dir, "metrics.csv")
 
-    def _make_trainer(max_epochs, stage_name):
+    def _make_trainer(max_epochs, stage_name, extra_callbacks=None):
         ckpt = ModelCheckpoint(
             monitor="val_recall@1", dirpath=cfg.checkpoint_dir,
             filename=f"{stage_name}" + "-{epoch:02d}-{val_recall@1:.3f}",
             save_top_k=1, mode="max", save_last=(stage_name == "stage2"),
         )
         strategy = DDPStrategy(start_method="spawn") if cfg.devices > 1 else cfg.strategy
+        cbs = [
+            ckpt,
+            LearningRateMonitor("epoch"),
+            RecallAtKCallback(every_n_epochs=cfg.recall_every_n_epochs),
+            EarlyStopping("val_recall@1", patience=cfg.patience, mode="max", strict=False),
+        ]
+        if extra_callbacks:
+            cbs.extend(extra_callbacks)
         trainer = pl.Trainer(
             max_epochs=max_epochs, accelerator="gpu", devices=cfg.devices,
             strategy=strategy,
@@ -352,44 +448,81 @@ def train(cfg: Config = None):
             precision=cfg.precision, log_every_n_steps=1,
             gradient_clip_val=cfg.gradient_clip,
             logger=logger,
-            callbacks=[
-                ckpt,
-                LearningRateMonitor("epoch"),
-                RecallAtKCallback(every_n_epochs=cfg.recall_every_n_epochs),
-                EarlyStopping("val_recall@1", patience=cfg.patience, mode="max", strict=False),
-            ],
+            callbacks=cbs,
         )
         return trainer, ckpt
 
-    # ── Head warmup: frozen backbone, projection head only ────────────────────
-    if do_head_warmup:
-        trainer_head, ckpt_head = _make_trainer(cfg.head_only_epochs, "stage1_head")
-        trainer_head.fit(model, train_loader, val_loader_1)
-        if ckpt_head.best_model_path:
-            model = RouteFinderModel.load_from_checkpoint(
-                ckpt_head.best_model_path,
-                num_unfrozen_blocks=cfg.num_unfrozen_blocks,
-                backbone_lr=cfg.backbone_lr,
-            )
+    if cfg.stage1_ckpt:
+        # ── Resume from pre-trained Stage 1 checkpoint, skip Stage 1 ─────────
+        print(f"\nLoading Stage 1 checkpoint: {cfg.stage1_ckpt}")
+        model = RouteFinderModel.load_from_checkpoint(
+            cfg.stage1_ckpt,
+            num_unfrozen_blocks=cfg.num_unfrozen_blocks,
+            lr=cfg.lr,
+            backbone_lr=cfg.backbone_lr,
+        )
+        best_s1_path = cfg.stage1_ckpt
+    else:
+        # ── Train Stage 1 from scratch ────────────────────────────────────────
+        do_head_warmup = cfg.proj_dim > 0 and cfg.head_only_epochs > 0 and cfg.num_unfrozen_blocks > 0
+        initial_unfrozen = 0 if do_head_warmup else cfg.num_unfrozen_blocks
 
-    # ── Stage 1: random batches, easy negatives ───────────────────────────────
-    trainer_s1, ckpt_s1 = _make_trainer(cfg.stage1_epochs, "stage1")
-    trainer_s1.fit(model, train_loader, val_loader_1)
+        model = RouteFinderModel(
+            embed_dim=cfg.embed_dim, proj_dim=cfg.proj_dim, img_size=cfg.img_size,
+            lr=cfg.lr, backbone_lr=cfg.backbone_lr, temperature=cfg.temperature,
+            weight_decay=cfg.weight_decay, warmup_epochs=cfg.warmup_epochs,
+            num_unfrozen_blocks=initial_unfrozen, backbone_name=cfg.backbone,
+        )
 
-    if ckpt_s1.best_model_path:
-        model = RouteFinderModel.load_from_checkpoint(ckpt_s1.best_model_path)
+        if do_head_warmup:
+            trainer_head, ckpt_head = _make_trainer(cfg.head_only_epochs, "stage1_head")
+            trainer_head.fit(model, train_loader, val_loader_1)
+            if ckpt_head.best_model_path:
+                model = RouteFinderModel.load_from_checkpoint(
+                    ckpt_head.best_model_path,
+                    num_unfrozen_blocks=cfg.num_unfrozen_blocks,
+                    backbone_lr=cfg.backbone_lr,
+                )
 
-    metrics_csv = os.path.join(cfg.checkpoint_dir, "metrics.csv")
-    print(f"\nBest Stage 1 checkpoint: {ckpt_s1.best_model_path}")
+        trainer_s1, ckpt_s1 = _make_trainer(cfg.stage1_epochs, "stage1")
+        trainer_s1.fit(model, train_loader, val_loader_1)
+
+        if ckpt_s1.best_model_path:
+            model = RouteFinderModel.load_from_checkpoint(ckpt_s1.best_model_path)
+        best_s1_path = ckpt_s1.best_model_path
+
+    print(f"\nBest Stage 1 checkpoint: {best_s1_path}")
 
     if cfg.stage2_epochs <= 0:
-        return ckpt_s1.best_model_path, metrics_csv, test_loader
+        return best_s1_path, metrics_csv, test_loader
 
-    # ── Stage 2: mixed hard+easy batches ─────────────────────────────────────
+    # ── Stage 2: online hard negative mining ─────────────────────────────────
+    # For the first mine_every_n_epochs epochs the index is None so the sampler
+    # falls back to random ordering. After each mining pass the index is updated
+    # in-place before the next epoch starts.
     # configure_optimizers is re-called by the new Trainer, giving Stage 2 its
     # own warmup + cosine cycle — appropriate for the harder task.
-    trainer_s2, ckpt_s2 = _make_trainer(cfg.stage2_epochs, "stage2")
-    trainer_s2.fit(model, train_loader_hard, val_loader_2)
+    samples_per_batch = max(1, cfg.batch_size // cfg.n_views)
+    mining_sampler = HardNegMiningBatchSampler(
+        train_split, samples_per_batch,
+        hard_neg_frac=cfg.hard_neg_frac,
+    )
+    train_loader_mining = DataLoader(
+        SupConDataset(train_split, n_views=cfg.n_views, img_size=cfg.img_size),
+        batch_sampler=mining_sampler,
+        collate_fn=supcon_collate, num_workers=cfg.num_workers, pin_memory=True,
+    )
+    mining_callback = HardNegMiningCallback(
+        train_split=train_split,
+        sampler=mining_sampler,
+        mine_every_n_epochs=cfg.mine_every_n_epochs,
+        hard_neg_superset=cfg.hard_neg_superset,
+        img_size=cfg.img_size,
+        batch_size=cfg.batch_size,
+        num_workers=cfg.num_workers,
+    )
+    trainer_s2, ckpt_s2 = _make_trainer(cfg.stage2_epochs, "stage2", extra_callbacks=[mining_callback])
+    trainer_s2.fit(model, train_loader_mining, val_loader_2)
 
     print(f"Best Stage 2 checkpoint: {ckpt_s2.best_model_path}")
     return ckpt_s2.best_model_path or ckpt_s1.best_model_path, metrics_csv, test_loader

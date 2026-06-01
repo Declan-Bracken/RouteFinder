@@ -134,3 +134,86 @@ class HardNegativeBatchSampler(MultiRouteBatchSampler):
         if self.shuffle and world_size > 1:
             ordered = ordered[rank::world_size]
         return ordered
+
+
+class HardNegMiningBatchSampler(MultiRouteBatchSampler):
+    """
+    Online hard negative mining sampler.
+
+    Falls back to random batching until update_index() is called. Once the
+    index is populated, composes each batch around a seed route:
+      1. Seed route images
+      2. Randomly-sampled routes from the seed's hard negative superset
+         (up to hard_neg_frac * max_batch_size images; shuffled each epoch
+         so the model doesn't see the same hard pairs every time)
+      3. Random routes to fill the remainder (prevents embedding collapse)
+
+    Each route serves as a seed at most once per epoch. Routes absorbed as
+    hard negatives or random fill are skipped when their turn as seed arrives,
+    so every image appears in exactly one batch per epoch.
+    """
+    def __init__(self, hf_dataset, max_batch_size: int, hard_neg_frac: float = 0.7, shuffle: bool = True):
+        super().__init__(hf_dataset, max_batch_size, shuffle)
+        self.hard_neg_frac = hard_neg_frac
+        self._hard_neg_index: dict[int, list[int]] | None = None
+        self._route_id_to_group: dict[int, list[int]] = {
+            hf_dataset[group[0]]["route_id"]: group
+            for group in self.route_groups
+        }
+        self._all_route_ids = list(self._route_id_to_group.keys())
+
+    def update_index(self, hard_neg_index: dict[int, list[int]]) -> None:
+        """Refresh the hard negative candidate list. Called by HardNegMiningCallback."""
+        self._hard_neg_index = hard_neg_index
+
+    def __iter__(self):
+        if self._hard_neg_index is None:
+            yield from super().__iter__()
+            return
+
+        rank, world_size = _dist_rank_world()
+        all_ids = list(self._all_route_ids)
+        random.shuffle(all_ids)
+        if self.shuffle and world_size > 1:
+            all_ids = all_ids[rank::world_size]
+
+        # Separate random pool for remainder fill (different shuffle → more variety)
+        random_pool = list(all_ids)
+        random.shuffle(random_pool)
+        rp_idx = 0
+        used: set[int] = set()
+        hard_target = int(self.hard_neg_frac * self.max_batch_size)
+
+        for seed_id in all_ids:
+            if seed_id in used:
+                continue
+            used.add(seed_id)
+            batch = list(self._route_id_to_group[seed_id])
+
+            # Sample hard negatives from superset (shuffled for batch diversity across epochs)
+            candidates = list(self._hard_neg_index.get(seed_id, []))
+            random.shuffle(candidates)
+            for cand_id in candidates:
+                if len(batch) >= hard_target:
+                    break
+                if cand_id in used or cand_id not in self._route_id_to_group:
+                    continue
+                cand_group = self._route_id_to_group[cand_id]
+                if len(batch) + len(cand_group) > self.max_batch_size:
+                    continue
+                batch.extend(cand_group)
+                used.add(cand_id)
+
+            # Fill remaining slots with random unused routes
+            while len(batch) < self.max_batch_size and rp_idx < len(random_pool):
+                rid = random_pool[rp_idx]
+                rp_idx += 1
+                if rid in used or rid not in self._route_id_to_group:
+                    continue
+                group = self._route_id_to_group[rid]
+                if len(batch) + len(group) > self.max_batch_size:
+                    continue
+                batch.extend(group)
+                used.add(rid)
+
+            yield batch
