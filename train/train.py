@@ -63,7 +63,7 @@ class Config:
     warmup_epochs: int = 3          # short warmup — no need to ramp to a large LR
     patience: int = 15
     gradient_clip: float = 1.0
-    precision: int = 16
+    precision: str = "16-mixed"
 
     # Eval
     recall_every_n_epochs: int = 1  # every epoch
